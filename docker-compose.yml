@@ -1,0 +1,74 @@
+services:
+  enhancer:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8000:8000"
+    environment:
+      OMP_NUM_THREADS: "4"
+      OPENBLAS_NUM_THREADS: "4"
+      ORTHANC_URL: "http://orthanc:8042"
+      ORTHANC_USERNAME: "${ORTHANC_USERNAME:-admin}"
+      ORTHANC_PASSWORD: "${ORTHANC_PASSWORD:-change-this-password}"
+      ADMIN_USERNAME: "${ADMIN_USERNAME:-mriadmin}"
+      ADMIN_PASSWORD: "${ADMIN_PASSWORD:-change-this-admin-password}"
+      INTERNAL_TOKEN: "${INTERNAL_TOKEN:-change-this-long-random-token}"
+      LEGACY_UNSAFE_AUTO_PROCESS_ENABLED: "false"
+      POLL_SECONDS: "${POLL_SECONDS:-10}"
+      INTAKE_POLL_SECONDS: "${INTAKE_POLL_SECONDS:-10}"
+      ENHANC_PREFIX: "${ENHANC_PREFIX:-ENHANC-}"
+      OHIF_PUBLIC_URL: "${OHIF_PUBLIC_URL:-/ohif/viewer}"
+      APP_DB: "/var/lib/enhancer/enhancer.sqlite3"
+    volumes:
+      - enhancer-data:/var/lib/enhancer
+      - ./datasets:/datasets:ro
+      - e2e-data:/e2e
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 20s
+      timeout: 5s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+
+  orthanc:
+    image: orthancteam/orthanc:latest
+    restart: unless-stopped
+    ports:
+      - "${DICOM_BIND_IP:-127.0.0.1}:4242:4242"
+      - "127.0.0.1:8042:8042"
+    environment:
+      ORTHANC__NAME: "MRI-0.3T-Gateway"
+      ORTHANC__DICOM_AET: "MRI03T"
+      ORTHANC__DICOM_CHECK_CALLED_AET: "true"
+      ORTHANC__AUTHENTICATION_ENABLED: "true"
+      ORTHANC__REGISTERED_USERS: '{"${ORTHANC_USERNAME:-admin}": "${ORTHANC_PASSWORD:-change-this-password}"}'
+      ORTHANC__REMOTE_ACCESS_ALLOWED: "true"
+      DICOM_WEB_PLUGIN_ENABLED: "true"
+      ORTHANC_EXPLORER_2_ENABLED: "true"
+      OHIF_PLUGIN_ENABLED: "true"
+      ORTHANC__STABLE_AGE: "15"
+      ORTHANC__LUA_SCRIPTS: '["/etc/orthanc/dynamic-allowlist.lua"]'
+      INTERNAL_TOKEN: "${INTERNAL_TOKEN:-change-this-long-random-token}"
+      ORTHANC_CALLED_AET: "${ORTHANC_CALLED_AET:-MRI03T}"
+    volumes:
+      - orthanc-data:/var/lib/orthanc/db
+      - ./orthanc/dynamic-allowlist.lua:/etc/orthanc/dynamic-allowlist.lua:ro
+
+  e2e-pacs:
+    profiles: ["e2e"]
+    build: .
+    command: ["python", "-m", "app.e2e_receiver"]
+    user: "0:0"
+    environment:
+      E2E_OUT: /e2e
+    volumes:
+      - e2e-data:/e2e
+    restart: "no"
+
+volumes:
+  orthanc-data:
+  enhancer-data:
+  e2e-data:

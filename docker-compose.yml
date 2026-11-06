@@ -3,7 +3,7 @@ services:
     build: .
     restart: unless-stopped
     ports:
-      - "127.0.0.1:8000:8000"
+      - "0.0.0.0:8000:8000"
     environment:
       OMP_NUM_THREADS: "4"
       OPENBLAS_NUM_THREADS: "4"
@@ -22,6 +22,8 @@ services:
     volumes:
       - enhancer-data:/var/lib/enhancer
       - ./datasets:/datasets:ro
+      - ./models:/app/models
+      - ./app:/app/app
       - e2e-data:/e2e
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
@@ -38,7 +40,7 @@ services:
     restart: unless-stopped
     ports:
       - "${DICOM_BIND_IP:-127.0.0.1}:4242:4242"
-      - "127.0.0.1:8042:8042"
+      - "0.0.0.0:8042:8042"
     environment:
       ORTHANC__NAME: "MRI-0.3T-Gateway"
       ORTHANC__DICOM_AET: "MRI03T"

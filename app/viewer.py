@@ -30,8 +30,14 @@ def source_center(api: httpx.Client, series_id: str):
     origin = api.get(f"/instances/{instances[0]}/metadata/1024")
     return get_center_by_aet(origin.text.strip()) if origin.status_code == 200 else None
 
+
 router = APIRouter(prefix="/admin", tags=["viewer"])
 ORTHANC_ID = re.compile(r"^[0-9a-f]{8}(?:-[0-9a-f]{8}){4}$")
+
+
+def is_derived_series(description: str) -> bool:
+    u = description.upper()
+    return u.startswith("ENHANC") or "[AI-SWIFT]" in u or "[RAD4AI]" in u or "[RAD4AI-PRO]" in u or "[ENHANCED]" in u
 
 
 def client() -> httpx.Client:
@@ -63,6 +69,34 @@ def thumbnail(series_id: str, _: str = Depends(require_admin)):
         raise HTTPException(404, str(exc)) from exc
 
 
+@router.get("/series/{series_id}/slice/{slice_index}.png")
+def series_slice_png(series_id: str, slice_index: int, _: str = Depends(require_admin)):
+    if not ORTHANC_ID.fullmatch(series_id):
+        raise HTTPException(400, "Invalid series ID")
+    try:
+        with client() as api:
+            info = api.get(f"/series/{series_id}")
+            info.raise_for_status()
+            instances = info.json().get("Instances", [])
+            if not instances:
+                raise ValueError("Empty series")
+            inst_meta = []
+            for iid in instances:
+                r = api.get(f"/instances/{iid}")
+                if r.status_code == 200:
+                    num = int(r.json().get("MainDicomTags", {}).get("InstanceNumber", 0) or 0)
+                    inst_meta.append((num, iid))
+            inst_meta.sort(key=lambda x: x[0])
+            idx = max(0, min(slice_index, len(inst_meta) - 1))
+            chosen_id = inst_meta[idx][1]
+            preview = api.get(f"/instances/{chosen_id}/preview")
+            preview.raise_for_status()
+        return Response(preview.content, media_type=preview.headers.get("content-type", "image/png"),
+                        headers={"Cache-Control": "private, max-age=120"})
+    except (httpx.HTTPError, ValueError) as exc:
+        raise HTTPException(404, str(exc)) from exc
+
+
 def png_rgb(array: np.ndarray) -> bytes:
     height, width, channels = array.shape
     if channels != 3 or array.dtype != np.uint8:
@@ -73,23 +107,32 @@ def png_rgb(array: np.ndarray) -> bytes:
     return b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)) + chunk(b"IDAT", zlib.compress(raw, 9)) + chunk(b"IEND", b"")
 
 
-def profile_form(series_id: str, description: str, instances: int) -> str:
-    recommended, reason = recommendation(description, instances)
+def profile_form(series_id: str, description: str, instances: int, existing_job=None) -> str:
+    recommended, _reason = recommendation(description, instances)
     enabled = enabled_profile_names()
+    if "RAD4AI_SPINE_PRO" in enabled and not any(w in description.upper() for w in ("SCANO", "LOCALIZER", "SURVEY")):
+        recommended = "RAD4AI_SPINE_PRO"
+    elif "AI_SWIFT_DENOISE" in enabled and not any(w in description.upper() for w in ("SCANO", "LOCALIZER", "SURVEY")):
+        recommended = "AI_SWIFT_DENOISE"
     options = "".join(
         f"<option value='{key}' {'selected' if key == recommended else ''} title='{esc(PROFILE_INFO[key]['guidance'])}'>{esc(label)}</option>"
         for key, label in PROFILES.items() if key in enabled
     )
-    strengths = "".join(f"<option value='{key}' {'selected' if key == 'MILD' else ''}>{esc(label)}</option>" for key, label in STRENGTHS.items())
+    default_strength = "MEDIUM" if recommended in {"AI_SWIFT_DENOISE", "RAD4AI_SPINE_PRO"} else "MILD"
+    strengths = "".join(f"<option value='{key}' {'selected' if key == default_strength else ''}>{esc(label)}</option>" for key, label in STRENGTHS.items())
+    compare_btn = ""
+    if existing_job and existing_job["status"] == "ready" and existing_job["output_series_id"]:
+        compare_btn = f"<a class='btn emerald' href='/admin/jobs/{existing_job['id']}/compare'>🔍 Compare Before/After (Job #{existing_job['id']})</a>"
     return (f"<div class='series-choice'><input class='series-check' type='checkbox' "
-            f"value='{series_id}' aria-label='اختيار {esc(description)}'>"
+            f"value='{series_id}' aria-label='Select {esc(description)}'>"
+            f"<form method='post' action='/admin/series/{series_id}/ai-swift' class='ai-quick-form'>"
+            f"<button class='btn ai-btn' title='Instant RAD4AI Spine & Ortho Pro High-Clarity Enhancement'>⚡ Instant RAD4AI Pro</button></form>"
             f"<form method='post' action='/admin/series/{series_id}/enqueue' class='actions enqueue-form'>"
-            f"<select name='profile' style='padding:8px;border:1px solid #60728b;border-radius:7px'>{options}</select>"
-            f"<select name='strength' style='padding:8px;border:1px solid #60728b;border-radius:7px'>{strengths}</select>"
-            "<label class='muted' title='مطلوب عند CLAHE أو المستوى القوي'><input type='checkbox' name='acknowledged'> إقرار بحثي</label>"
-            f"<button class='btn gray'>Add to Queue</button></form>"
-            f"<form method='post' action='/admin/series/{series_id}/safe-preset' class='preset-form'><button class='btn'>مقارنة محافظة تلقائية</button></form>"
-            f"</div><div class='hint'>التوصية: {esc(PROFILES[recommended])} — {esc(reason)}</div>")
+            f"<select name='profile' style='padding:7px;border-radius:7px'>{options}</select>"
+            f"<select name='strength' style='padding:7px;border-radius:7px'>{strengths}</select>"
+            "<label class='muted' title='Required for CLAHE or Strong level'><input type='checkbox' name='acknowledged'> Research Ack</label>"
+            f"<button class='btn gray'>+ Custom Queue</button></form>"
+            f"{compare_btn}</div>")
 
 
 @router.get("/studies", response_class=HTMLResponse)
@@ -106,45 +149,101 @@ def studies(message: str = "", error: str = "", job_status: str = "", profile_fi
         latest.setdefault(job["source_series_id"], job)
     try:
         with client() as api:
-            response = api.get("/studies?expand")
-            response.raise_for_status()
+            studies_resp = api.get("/studies?expand")
+            studies_resp.raise_for_status()
+            series_resp = api.get("/series?expand")
+            series_resp.raise_for_status()
+            series_lookup = {s["ID"]: s for s in series_resp.json()}
+
             rows = []
-            for study in response.json():
+            for idx_study, study in enumerate(studies_resp.json()):
                 main = study.get("MainDicomTags", {})
                 patient = study.get("PatientMainDicomTags", {})
-                cells, enhanced_count, thumbnail_series = [], 0, ""
-                for series_id in study.get("Series", []):
-                    series_response = api.get(f"/series/{series_id}")
-                    if series_response.status_code != 200:
-                        continue
-                    item = series_response.json()
+                raw_cells, derived_cells, enhanced_count, thumbnail_series = [], [], 0, ""
+
+                study_series = [series_lookup[sid] for sid in study.get("Series", []) if sid in series_lookup]
+                study_series.sort(key=lambda s: int(s.get("MainDicomTags", {}).get("SeriesNumber", 0) or 0))
+
+                for item in study_series:
+                    series_id = item["ID"]
                     tags = item.get("MainDicomTags", {})
-                    description = str(tags.get("SeriesDescription", "بدون اسم"))
-                    enhanced = description.upper().startswith("ENHANC")
+                    description = str(tags.get("SeriesDescription", "Unnamed Series"))
+                    s_num = str(tags.get("SeriesNumber", "—"))
+                    inst_count = len(item.get("Instances", []))
+                    enhanced = is_derived_series(description)
                     enhanced_count += int(enhanced)
                     if not enhanced and not thumbnail_series:
                         thumbnail_series = series_id
                     job = latest.get(series_id)
-                    if enhanced:
-                        action = "<span class='badge ok'>Derived</span>"
-                    elif job and job["status"] in {"queued", "processing"}:
-                        action = f"<span class='badge warn'>{esc(job['profile'])}/{esc(job['strength'])}: {esc(job['status'])}</span>"
-                    else:
-                        action = profile_form(series_id, description, len(item.get("Instances", [])))
-                    cells.append(f"<div style='padding:8px 0;border-bottom:1px solid #eee'><b>{esc(description)}</b> "
-                                 f"<span class='muted'>({len(item.get('Instances', []))} images)</span>{action}</div>")
-                uid = str(main.get("StudyInstanceUID", ""))
-                open_link = f"<a class='btn' target='_blank' rel='noopener' href='{esc(viewer_url(uid))}'>Open / Compare in OHIF</a>" if uid else "UID غير موجود"
-                thumb = f"<img class='thumb' loading='lazy' src='/admin/series/{thumbnail_series}/thumbnail' alt='Study thumbnail'>" if thumbnail_series else "<div class='thumb'></div>"
-                rows.append(f"<details class='study-card' data-study='{esc(study.get('ID',''))}'><summary>{thumb}<div><b>{esc(patient.get('PatientName','')) or 'Unknown patient'}</b><br><span class='muted'>{esc(patient.get('PatientID',''))} · {esc(main.get('StudyDescription',''))} · {esc(main.get('StudyDate',''))}</span><br><span class='badge {'ok' if enhanced_count else 'warn'}'>{enhanced_count} Enhanced</span></div><span class='chevron'></span></summary><div class='study-body'><div class='study-toolbar'><button type='button' class='btn gray select-study'>تحديد الأصل / Select originals</button>{open_link}</div>{''.join(cells)}</div></details>")
-    except httpx.HTTPError as exc:
-        return layout("الحالات والمقارنة", "<section class='panel'><h2>تعذر تحميل الحالات</h2></section>", str(exc), True)
 
-    studies_html = "".join(rows) or "<div class='empty'>لا توجد دراسات / No studies.</div>"
+                    if enhanced:
+                        disp_desc = description.replace("[AI-SWIFT]", "[RAD4AI]")
+                        badge_type = "✨ RAD4AI Enhanced" if any(k in description.upper() for k in ("[AI-SWIFT]", "AISWIFT", "[RAD4AI]", "RAD4AI")) else "✓ Enhanced (Derived)"
+                        derived_cells.append(
+                            f"<div class='series-item derived-item'>"
+                            f"<div><span class='snum-badge derived'>S:{esc(s_num)}</span> <b>{esc(disp_desc)}</b> "
+                            f"<span class='muted'>({inst_count} slices)</span></div>"
+                            f"<div><span class='badge ok'>{badge_type}</span></div></div>"
+                        )
+                    else:
+                        if job and job["status"] in {"queued", "processing"}:
+                            action = f"<span class='badge warn'>⏳ Processing: {esc(job['profile'])} ({esc(job['strength'])})</span>"
+                        else:
+                            action = profile_form(series_id, description, inst_count, job)
+                        raw_cells.append(
+                            f"<div class='series-item'>"
+                            f"<div><span class='snum-badge'>S:{esc(s_num)}</span> <b>{esc(description)}</b> "
+                            f"<span class='muted'>({inst_count} raw slices)</span></div>"
+                            f"{action}</div>"
+                        )
+
+                uid = str(main.get("StudyInstanceUID", ""))
+                open_link = f"<a class='btn emerald' target='_blank' rel='noopener' href='{esc(viewer_url(uid))}'>🖥️ Open & Compare in OHIF Viewer</a>" if uid else "Missing UID"
+                thumb = f"<img class='thumb' loading='lazy' src='/admin/series/{thumbnail_series}/thumbnail' alt='Study thumbnail'>" if thumbnail_series else "<div class='thumb'></div>"
+                open_attr = "open" if idx_study == 0 else ""
+
+                derived_section = ""
+                if derived_cells:
+                    derived_section = (
+                        f"<div style='margin-top:14px'><h4 style='margin:0 0 8px;color:#34d399'>✨ AI-Enhanced Series Ready for Comparison ({len(derived_cells)}):</h4>"
+                        f"<div class='series-grid'>{''.join(derived_cells)}</div></div>"
+                    )
+
+                rows.append(
+                    f"<details class='study-card' data-study='{esc(study.get('ID',''))}' {open_attr}>"
+                    f"<summary>{thumb}<div><b style='font-size:16px'>{esc(patient.get('PatientName','')) or 'Unknown patient'}</b> — "
+                    f"<span style='color:#60a5fa;font-weight:700'>{esc(main.get('StudyDescription',''))}</span><br>"
+                    f"<span class='muted'>ID: {esc(patient.get('PatientID',''))} · Date: {esc(main.get('StudyDate',''))} · {len(raw_cells)} original series</span><br>"
+                    f"<span class='badge {'ok' if enhanced_count else 'warn'}' style='margin-top:5px'>{enhanced_count} enhanced series ready</span></div>"
+                    f"<span class='chevron'></span></summary>"
+                    f"<div class='study-body'><div class='study-toolbar'>"
+                    f"<button type='button' class='btn gray select-study'>☑️ Select All Original Series</button>{open_link}</div>"
+                    f"<h4 style='margin:6px 0 8px;color:#93c5fd'>🩻 Original Raw Series:</h4>"
+                    f"<div class='series-grid'>{''.join(raw_cells)}</div>"
+                    f"{derived_section}</div></details>"
+                )
+    except httpx.HTTPError as exc:
+        return layout("Studies & AI Comparison", "<section class='panel'><h2>Failed to load studies from Orthanc</h2></section>", str(exc), True)
+
+    studies_html = "".join(rows) or "<div class='empty'>No studies available in Orthanc.</div>"
     job_rows = []
     for job in jobs:
         metrics = json.loads(job["metrics_json"]) if job["metrics_json"] else {}
-        metrics_text = " · ".join(f"{esc(k)}={esc(v)}" for k, v in metrics.items())
+        if metrics:
+            sec = metrics.get("seconds", "—")
+            nc = metrics.get("noise_change_percent", "—")
+            ep = metrics.get("edge_preservation_percent", "—")
+            inst = metrics.get("output_instances", metrics.get("instances", "—"))
+            metrics_html = (
+                f"<div class='kpi-pills'>"
+                f"<span class='kpi-pill'>⚡ {esc(sec)}s</span>"
+                f"<span class='kpi-pill'>📉 Noise {esc(nc)}%</span>"
+                f"<span class='kpi-pill'>🎯 Edge {esc(ep)}%</span>"
+                f"<span class='kpi-pill'>🖼️ {esc(inst)} slices</span>"
+                f"</div>"
+            )
+        else:
+            metrics_html = "<span class='muted'>—</span>"
         try:
             qc_reasons = " · ".join(json.loads(job["qc_reasons"])) if job["qc_reasons"] else ""
         except (json.JSONDecodeError, TypeError):
@@ -152,47 +251,270 @@ def studies(message: str = "", error: str = "", job_status: str = "", profile_fi
         qc_class = "ok" if job["qc_status"] == "PASS" else "bad" if job["qc_status"] == "FAIL" else "warn"
         controls = ""
         if job["status"] == "ready":
-            decisions = {"": "لم يُراجع", "best": "الأفضل", "acceptable": "مقبول", "rejected": "مرفوض"}
+            decisions = {"": "Unreviewed", "best": "⭐ Best (Diagnostic)", "acceptable": "✓ Clinically Acceptable", "rejected": "✗ Rejected"}
             options = "".join(f"<option value='{key}' {'selected' if job['decision'] == key else ''}>{label}</option>" for key, label in decisions.items())
-            controls = (f"<a class='btn gray' target='_blank' href='/admin/jobs/{job['id']}/difference.png'>Difference Map</a>"
+            controls = (f"<div class='actions'>"
+                        f"<a class='btn ai-btn' href='/admin/jobs/{job['id']}/compare'>🔍 Interactive Compare (Before / After)</a>"
+                        f"<a class='btn gray' target='_blank' href='/admin/jobs/{job['id']}/difference.png'>Difference Map</a></div>"
                         f"<form method='post' action='/admin/jobs/{job['id']}/evaluate' class='review-form'>"
                         f"<select name='decision' required>{options}</select>"
-                        f"<input name='notes' maxlength='1000' placeholder='ملاحظة الطبيب' value='{esc(job['review_notes'])}'>"
-                        "<button class='btn'>حفظ التقييم</button></form>"
-                        + (f"<a class='btn gray' href='/admin/protocols/{job['protocol_study_id']}'>Protocol Study · Return blocked</a>" if job["protocol_study_id"] else
-                           f"<form method='post' action='/admin/jobs/{job['id']}/approve' onsubmit=\"return confirm('اعتماد النتيجة وإضافتها لطابور الإرجاع حسب سياسة المركز؟')\"><button class='btn'>Approve & Return</button></form>"))
+                        f"<input name='notes' maxlength='1000' placeholder='Radiologist notes...' value='{esc(job['review_notes'])}'>"
+                        "<button class='btn gray'>Save Review</button></form>"
+                        + (f"<a class='btn gray' href='/admin/protocols/{job['protocol_study_id']}'>Protocol Study</a>" if job["protocol_study_id"] else
+                           f"<form style='margin-top:5px' method='post' action='/admin/jobs/{job['id']}/approve' onsubmit=\"return confirm('Approve result and add to PACS Return Queue?')\"><button class='btn emerald'>📤 Approve & Return to PACS</button></form>"))
         elif job["status"] == "failed":
-            controls = f"<form method='post' action='/admin/jobs/{job['id']}/retry'><button class='btn gray'>Retry</button></form>"
-        decision_text = {"best": "الأفضل", "acceptable": "مقبول", "rejected": "مرفوض"}.get(job["decision"], "لم يُراجع")
-        job_rows.append(f"<tr><td>{job['id']}</td><td>{esc(job['profile'])}<br><span class='muted'>{esc(job['strength'])}</span></td><td><span class='badge {'ok' if job['status']=='ready' else 'bad' if job['status']=='failed' else 'warn'}'>{esc(job['status'])}</span></td><td><span class='badge {qc_class}'>{esc(job['qc_status'])}</span><div class='hint'>{esc(qc_reasons)}</div></td><td>{esc(metrics_text)}</td><td><span class='badge {'ok' if job['decision'] in {'best','acceptable'} else 'bad' if job['decision']=='rejected' else 'warn'}'>{decision_text}</span></td><td>{esc(job['error'])}</td><td>{controls}</td></tr>")
-    jobs_html = "".join(job_rows) or "<tr><td colspan='8' class='empty'>لا توجد مهام مطابقة للفلاتر.</td></tr>"
+            controls = f"<form method='post' action='/admin/jobs/{job['id']}/retry'><button class='btn gray'>🔄 Retry Job</button></form>"
+        decision_text = {"best": "⭐ Best", "acceptable": "✓ Acceptable", "rejected": "✗ Rejected"}.get(job["decision"], "Unreviewed")
+        job_rows.append(f"<tr><td><b>#{job['id']}</b></td><td><b>{esc(job['profile'])}</b><br><span class='badge'>{esc(job['strength'])}</span></td><td><span class='badge {'ok' if job['status']=='ready' else 'bad' if job['status']=='failed' else 'warn'}'>{esc(job['status'])}</span></td><td><span class='badge {qc_class}'>{esc(job['qc_status'])}</span><div class='hint'>{esc(qc_reasons)}</div></td><td>{metrics_html}</td><td><span class='badge {'ok' if job['decision'] in {'best','acceptable'} else 'bad' if job['decision']=='rejected' else 'warn'}'>{decision_text}</span></td><td>{esc(job['error'])}</td><td>{controls}</td></tr>")
+    jobs_html = "".join(job_rows) or "<tr><td colspan='8' class='empty'>No jobs matching selected filters.</td></tr>"
     enabled = enabled_profile_names()
-    bulk_options = "".join(f"<label class='tool-check'><input type='checkbox' name='bulk-tool' value='{key}' {'checked' if key == 'EDGE_DENOISE_MILD' else ''}> {esc(label)}</label>" for key, label in PROFILES.items() if key in enabled)
-    strength_options = "".join(f"<option value='{key}' {'selected' if key == 'MILD' else ''}>{esc(label)}</option>" for key, label in STRENGTHS.items())
-    bulk_bar = ("<div id='queue-toast' class='queue-toast' hidden></div><div id='bulk-bar' class='bulk-bar' hidden><b><span id='selected-count'>0</span> سلاسل محددة</b>"
+    bulk_options = "".join(f"<label class='tool-check'><input type='checkbox' name='bulk-tool' value='{key}' {'checked' if key == 'AI_SWIFT_DENOISE' else ''}> {esc(label)}</label>" for key, label in PROFILES.items() if key in enabled)
+    strength_options = "".join(f"<option value='{key}' {'selected' if key == 'MEDIUM' else ''}>{esc(label)}</option>" for key, label in STRENGTHS.items())
+    bulk_bar = ("<div id='queue-toast' class='queue-toast' hidden></div><div id='bulk-bar' class='bulk-bar' hidden><b><span id='selected-count'>0</span> series selected</b>"
                 f"<div class='bulk-tools'>{bulk_options}</div><select id='bulk-strength'>{strength_options}</select>"
-                "<label class='muted'><input id='bulk-ack' type='checkbox'> إقرار CLAHE/Strong بحثي</label>"
-                "<button type='button' class='btn' id='bulk-enqueue'>إضافة المحدد للـQueue</button>"
-                "<button type='button' class='btn gray' id='clear-selection'>إلغاء التحديد</button><span id='bulk-status'></span></div>")
+                "<label class='muted'><input id='bulk-ack' type='checkbox'> CLAHE/Strong Research Ack</label>"
+                "<button type='button' class='btn ai-btn' id='bulk-enqueue'>⚡ Enhance Selected Now</button>"
+                "<button type='button' class='btn gray' id='clear-selection'>Clear Selection</button><span id='bulk-status'></span></div>")
     script = """<script>
 const checks=()=>[...document.querySelectorAll('.series-check:checked')];
 const bar=document.getElementById('bulk-bar'),count=document.getElementById('selected-count'),statusBox=document.getElementById('bulk-status'),toast=document.getElementById('queue-toast');
-function showToast(message,isError=false){toast.textContent=message;toast.className='queue-toast '+(isError?'error':'ok');toast.hidden=false;setTimeout(()=>toast.hidden=true,5000);}
+function showToast(message,isError=false){toast.textContent=message;toast.className='queue-toast '+(isError?'error':'ok');toast.hidden=false;setTimeout(()=>toast.hidden=true,4500);}
 function syncBar(){const n=checks().length;count.textContent=n;bar.hidden=!n;}
 document.querySelectorAll('.series-check').forEach(c=>c.addEventListener('change',syncBar));
-document.querySelectorAll('.select-study').forEach(button=>button.addEventListener('click',()=>{const items=[...button.closest('.study-card').querySelectorAll('.series-check:not(:disabled)')];const select=!items.every(c=>c.checked);items.forEach(c=>c.checked=select);syncBar();}));
-document.getElementById('clear-selection').addEventListener('click',()=>{document.querySelectorAll('.series-check').forEach(c=>c.checked=false);syncBar();});
-document.querySelectorAll('.enqueue-form').forEach(form=>form.addEventListener('submit',async event=>{event.preventDefault();const button=form.querySelector('button');button.disabled=true;try{const response=await fetch(form.action,{method:'POST',body:new FormData(form),headers:{'X-Requested-With':'fetch'}});const data=await response.json();if(!response.ok)throw new Error(data.detail||'تعذر إضافة المهمة');button.textContent='تمت الإضافة ✓';form.closest('.series-choice').querySelector('.series-check').disabled=true;showToast(`تمت إضافة Job ${data.job_id} إلى Queue`);}catch(error){showToast(error.message,true);}finally{button.disabled=false;}}));
-document.querySelectorAll('.preset-form').forEach(form=>form.addEventListener('submit',async event=>{event.preventDefault();const button=form.querySelector('button');button.disabled=true;try{const response=await fetch(form.action,{method:'POST',headers:{'X-Requested-With':'fetch'}});const data=await response.json();if(!response.ok)throw new Error(data.detail||'تعذر إضافة المقارنة');button.textContent='تمت الإضافة ✓';showToast(`تمت إضافة ${data.count} نتائج للمقارنة`);}catch(error){showToast(error.message,true);}finally{button.disabled=false;}}));
-document.getElementById('bulk-enqueue').addEventListener('click',async()=>{const selected=checks(),profiles=[...document.querySelectorAll("input[name='bulk-tool']:checked")];if(!selected.length)return;if(!profiles.length){showToast('اختر محسّنًا واحدًا على الأقل',true);return;}const button=document.getElementById('bulk-enqueue'),data=new FormData();selected.forEach(c=>data.append('series_ids',c.value));profiles.forEach(p=>data.append('profiles',p.value));data.append('strength',document.getElementById('bulk-strength').value);if(document.getElementById('bulk-ack').checked)data.append('acknowledged','on');button.disabled=true;statusBox.textContent=' جارٍ الإضافة...';try{const response=await fetch('/admin/series/enqueue-batch',{method:'POST',body:data,headers:{'X-Requested-With':'fetch'}});const result=await response.json();if(!response.ok)throw new Error(result.detail||'تعذر إضافة المهام');selected.forEach(c=>{c.checked=false;c.disabled=true;});statusBox.textContent='';showToast(`تمت إضافة ${result.count} مهمة إلى Queue`);syncBar();}catch(error){statusBox.textContent='';showToast(error.message,true);}finally{button.disabled=false;}});
-document.querySelectorAll('.study-card').forEach(card=>{const key='mri-open-'+card.dataset.study;card.open=sessionStorage.getItem(key)==='1';card.addEventListener('toggle',()=>sessionStorage.setItem(key,card.open?'1':'0'));});
+document.querySelectorAll('.select-study').forEach(b=>b.addEventListener('click',()=>{const boxes=[...b.closest('.study-card').querySelectorAll('.series-check:not(:disabled)')];const next=boxes.some(c=>!c.checked);boxes.forEach(c=>c.checked=next);syncBar();}));
+document.getElementById('clear-selection').addEventListener('click',()=>{checks().forEach(c=>c.checked=false);syncBar();});
+document.querySelectorAll('.enqueue-form').forEach(form=>form.addEventListener('submit',async event=>{event.preventDefault();const button=form.querySelector('button');button.disabled=true;try{const response=await fetch(form.action,{method:'POST',body:new FormData(form),headers:{'X-Requested-With':'fetch'}});const data=await response.json();if(!response.ok)throw new Error(data.detail||'Failed to enqueue job');button.textContent='Queued ✓';showToast(`Job #${data.job_id} added to processing queue`);setTimeout(()=>location.reload(),1800);}catch(error){showToast(error.message,true);}finally{button.disabled=false;}}));
+document.querySelectorAll('.ai-quick-form').forEach(form=>form.addEventListener('submit',async event=>{event.preventDefault();const button=form.querySelector('button');button.disabled=true;button.textContent='⏳ Enhancing...';try{const response=await fetch(form.action,{method:'POST',headers:{'X-Requested-With':'fetch'}});const data=await response.json();if(!response.ok)throw new Error(data.detail||'Failed to start RAD4AI');button.textContent='✓ Queued!';showToast(`⚡ RAD4AI enhancement started (Job #${data.job_id})...`);setTimeout(()=>location.reload(),2200);}catch(error){showToast(error.message,true);button.textContent='⚡ Instant RAD4AI Enhance';}finally{button.disabled=false;}}));
+document.getElementById('bulk-enqueue').addEventListener('click',async()=>{const selected=checks(),profiles=[...document.querySelectorAll("input[name='bulk-tool']:checked")];if(!selected.length)return;if(!profiles.length){showToast('Select at least one enhancer profile',true);return;}const button=document.getElementById('bulk-enqueue'),data=new FormData();selected.forEach(c=>data.append('series_ids',c.value));profiles.forEach(p=>data.append('profiles',p.value));data.append('strength',document.getElementById('bulk-strength').value);if(document.getElementById('bulk-ack').checked)data.append('acknowledged','on');button.disabled=true;statusBox.textContent=' Enqueuing...';try{const response=await fetch('/admin/series/enqueue-batch',{method:'POST',body:data,headers:{'X-Requested-With':'fetch'}});const result=await response.json();if(!response.ok)throw new Error(result.detail||'Failed to enqueue batch');selected.forEach(c=>{c.checked=false;c.disabled=true;});statusBox.textContent='';showToast(`Added ${result.count} jobs to the processing queue`);syncBar();setTimeout(()=>location.reload(),2000);}catch(error){statusBox.textContent='';showToast(error.message,true);}finally{button.disabled=false;}});
 </script>"""
-    status_options = "".join(f"<option value='{value}' {'selected' if job_status == value else ''}>{label}</option>" for value, label in [("", "كل الحالات"), ("queued", "Queued"), ("processing", "Processing"), ("ready", "Ready"), ("failed", "Failed")])
-    profile_options = "<option value=''>كل المحسنات</option>" + "".join(f"<option value='{key}' {'selected' if profile_filter == key else ''}>{esc(label)}</option>" for key, label in PROFILES.items())
-    filters = f"<form method='get' class='actions queue-filters'><select name='job_status'>{status_options}</select><select name='profile_filter'>{profile_options}</select><button class='btn gray'>تصفية</button><a class='btn gray' href='/admin/studies'>مسح</a></form>"
-    body = f"<div style='margin-bottom:14px'><a class='btn gray' href='/admin'>العودة للوحة التحكم</a></div><section class='panel'><div class='panel-head'><h2>الحالات واختيار المحسّن</h2><span class='badge warn'>Manual review by default</span></div><p class='muted'>كل دراسة مجمعة في بطاقة. افتح البطاقة ثم حدد السلاسل؛ الإضافة تتم دون إعادة تحميل الصفحة.</p><div class='study-toolbar'><button class='btn gray' type='button' onclick=\"document.querySelectorAll('.study-card').forEach(x=>x.open=true)\">توسيع الكل / Expand all</button><button class='btn gray' type='button' onclick=\"document.querySelectorAll('.study-card').forEach(x=>x.open=false)\">طي الكل / Collapse all</button></div>{studies_html}</section><section class='panel'><div class='panel-head'><h2>Processing Queue & Quality Gate</h2>{filters}</div><div class='table-wrap'><table><tr><th>Job</th><th>Profile</th><th>Status</th><th>Quality Gate</th><th>Metrics</th><th>تقييم الطبيب</th><th>Error</th><th>الإجراء</th></tr>{jobs_html}</table></div></section>{bulk_bar}{script}"
-    body = body.replace("</a></div>", "</a> <a class='btn gray' href='/admin/tools'>إدارة أدوات التحسين</a></div>", 1)
-    return layout("الحالات والمقارنة", body, error or message, bool(error))
+    status_options = "".join(f"<option value='{value}' {'selected' if job_status == value else ''}>{label}</option>" for value, label in [("", "All Statuses"), ("queued", "Queued"), ("processing", "Processing"), ("ready", "Ready"), ("failed", "Failed")])
+    profile_options = "<option value=''>All Enhancers</option>" + "".join(f"<option value='{key}' {'selected' if profile_filter == key else ''}>{esc(label)}</option>" for key, label in PROFILES.items())
+    filters = f"<form method='get' class='actions queue-filters'><select name='job_status'>{status_options}</select><select name='profile_filter'>{profile_options}</select><button class='btn gray'>Filter</button><a class='btn gray' href='/admin/studies'>Reset</a></form>"
+    body = (
+        f"<section class='panel'><div class='panel-head'><h2>🩻 MRI Studies & RAD4AI Enhancement</h2>"
+        f"<div class='study-toolbar'><button class='btn gray' type='button' onclick=\"document.querySelectorAll('.study-card').forEach(x=>x.open=true)\">Expand All Studies</button>"
+        f"<button class='btn gray' type='button' onclick=\"document.querySelectorAll('.study-card').forEach(x=>x.open=false)\">Collapse All</button></div></div>"
+        f"<p class='muted'>Original raw series keep their base number (e.g. <b>S:14</b>), while RAD4AI-enhanced series add 100 (e.g. <b>S:114 [RAD4AI]</b>). Click <b>⚡ Instant RAD4AI Enhance</b> for 1-click enhancement, or <b>🔍 Compare Before/After</b> to inspect results.</p>"
+        f"{studies_html}</section>"
+        f"<section class='panel'><div class='panel-head'><h2>⚡ Processing Queue & Clinical Quality Gate</h2>{filters}</div>"
+        f"<div class='table-wrap'><table><tr><th>Job #</th><th>Enhancer & Level</th><th>Status</th><th>Quality Gate (QC)</th><th>Performance & Edge Metrics</th><th>Radiologist Review</th><th>Notes / Error</th><th>Compare & Action</th></tr>{jobs_html}</table></div></section>{bulk_bar}{script}"
+    )
+    return layout("Studies & RAD4AI Comparison", body, error or message, bool(error))
+
+
+@router.get("/jobs/{job_id}/compare", response_class=HTMLResponse)
+def interactive_compare(job_id: int, _: str = Depends(require_admin)):
+    job = get_comparison_job(job_id)
+    if job is None or job["status"] != "ready" or not job["output_series_id"]:
+        raise HTTPException(404, "Comparison job is not ready or does not exist")
+    metrics = json.loads(job["metrics_json"]) if job["metrics_json"] else {}
+    total_slices = int(metrics.get("output_instances", metrics.get("instances", 16)) or 16)
+    mid_slice = max(0, total_slices // 2)
+    src_sid = job["source_series_id"]
+    out_sid = job["output_series_id"]
+
+    study_uid = ""
+    src_desc = "Original Raw"
+    out_desc = "RAD4AI Enhanced"
+    src_snum = ""
+    out_snum = ""
+    patient_name = ""
+    try:
+        with client() as api:
+            s_info = api.get(f"/series/{src_sid}").json()
+            o_info = api.get(f"/series/{out_sid}").json()
+            src_desc = s_info.get("MainDicomTags", {}).get("SeriesDescription", src_desc)
+            out_desc = o_info.get("MainDicomTags", {}).get("SeriesDescription", out_desc).replace("[AI-SWIFT]", "[RAD4AI]")
+            src_snum = s_info.get("MainDicomTags", {}).get("SeriesNumber", "")
+            out_snum = o_info.get("MainDicomTags", {}).get("SeriesNumber", "")
+            parent_study = s_info.get("ParentStudy", "")
+            if parent_study:
+                st_info = api.get(f"/studies/{parent_study}").json()
+                study_uid = st_info.get("MainDicomTags", {}).get("StudyInstanceUID", "")
+                patient_name = st_info.get("PatientMainDicomTags", {}).get("PatientName", "")
+    except Exception:
+        pass
+
+    ohif_btn = f"<a class='btn emerald' target='_blank' href='{esc(viewer_url(study_uid))}'>🖥️ Open Full Study in OHIF Viewer</a>" if study_uid else ""
+
+    page = f"""
+    <div class='study-toolbar' style='justify-content:space-between'>
+      <div class='actions'>
+        <a class='btn gray' href='/admin/studies'>← Back to Studies</a>
+        {ohif_btn}
+      </div>
+      <div class='kpi-pills'>
+        <span class='kpi-pill'>Patient: <b>{esc(patient_name)}</b></span>
+        <span class='kpi-pill'>⚡ Time: <b>{esc(metrics.get('seconds','—'))}s</b></span>
+        <span class='kpi-pill'>📉 Noise Delta: <b>{esc(metrics.get('noise_change_percent','—'))}%</b></span>
+        <span class='kpi-pill'>🎯 Edge Preservation: <b>{esc(metrics.get('edge_preservation_percent','—'))}%</b></span>
+        <span class='badge ok'>QC: {esc(job['qc_status'])}</span>
+      </div>
+    </div>
+
+    <section class='panel' style='padding:18px'>
+      <div class='panel-head'>
+        <h2>🔍 Interactive Clinical Comparison (Job #{job_id}): <span class='snum-badge'>S:{esc(src_snum)} {esc(src_desc)}</span> vs <span class='snum-badge derived'>S:{esc(out_snum)} {esc(out_desc)}</span></h2>
+        <div class='actions'>
+          <button type='button' class='btn ai-btn' id='mode-side' onclick='setMode("side")'>🪟 Side-by-Side (2x1)</button>
+          <button type='button' class='btn gray' id='mode-wipe' onclick='setMode("wipe")'>↔️ Split Wipe (A/B)</button>
+          <button type='button' class='btn gray' id='mode-diff' onclick='setMode("diff")'>🔥 Difference Map</button>
+        </div>
+      </div>
+
+      <div style='display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:14px;background:#070d19;padding:14px;border-radius:12px;border:1px solid #1e293b;margin-bottom:16px;color:#e2e8f0'>
+        <div>
+          <label style='font-size:13px;font-weight:700;display:flex;justify-content:space-between'>
+            <span>🎞️ Slice Scrubber (Use Mouse Wheel):</span>
+            <span id='slice-label' style='color:#38bdf8'>{mid_slice + 1} / {total_slices}</span>
+          </label>
+          <input type='range' id='slice-slider' min='0' max='{max(0, total_slices - 1)}' value='{mid_slice}' style='width:100%;margin-top:6px;accent-color:#3b82f6'>
+        </div>
+        <div>
+          <label style='font-size:13px;font-weight:700;display:flex;justify-content:space-between'>
+            <span>☀️ Brightness:</span>
+            <span id='br-label'>100%</span>
+          </label>
+          <input type='range' id='br-slider' min='50' max='180' value='100' style='width:100%;margin-top:6px;accent-color:#3b82f6'>
+        </div>
+        <div>
+          <label style='font-size:13px;font-weight:700;display:flex;justify-content:space-between'>
+            <span>🌗 Contrast:</span>
+            <span id='ct-label'>105%</span>
+          </label>
+          <input type='range' id='ct-slider' min='60' max='220' value='105' style='width:100%;margin-top:6px;accent-color:#3b82f6'>
+        </div>
+        <div>
+          <label style='font-size:13px;font-weight:700;display:flex;justify-content:space-between'>
+            <span>🔍 Zoom:</span>
+            <span id='zm-label'>100%</span>
+          </label>
+          <input type='range' id='zm-slider' min='100' max='260' value='100' style='width:100%;margin-top:6px;accent-color:#3b82f6'>
+        </div>
+      </div>
+
+      <!-- Mode 1: Side by Side -->
+      <div id='view-side' style='display:grid;grid-template-columns:1fr 1fr;gap:16px'>
+        <div style='background:#020617;border:2px solid #334155;border-radius:12px;overflow:hidden;text-align:center;position:relative'>
+          <div style='position:absolute;top:10px;left:12px;z-index:10;background:rgba(15,23,42,.85);padding:5px 12px;border-radius:8px;border:1px solid #475569;font-weight:700;font-size:13px;color:#e2e8f0'>
+            Original Raw · <span style='color:#93c5fd'>S:{esc(src_snum)}</span>
+          </div>
+          <div style='height:480px;display:flex;align-items:center;justify-content:center;overflow:hidden' class='wheel-zone'>
+            <img id='img-src-side' class='mri-img' src='/admin/series/{src_sid}/slice/{mid_slice}.png' style='max-height:100%;max-width:100%;object-fit:contain;transition:transform .1s'>
+          </div>
+        </div>
+        <div style='background:#020617;border:2px solid #059669;border-radius:12px;overflow:hidden;text-align:center;position:relative;box-shadow:0 0 25px rgba(16,185,129,.15)'>
+          <div style='position:absolute;top:10px;left:12px;z-index:10;background:rgba(6,78,59,.9);padding:5px 12px;border-radius:8px;border:1px solid #10b981;font-weight:700;font-size:13px;color:#34d399'>
+            ✨ RAD4AI Enhanced (v2.0) · <span>S:{esc(out_snum)}</span>
+          </div>
+          <div style='height:480px;display:flex;align-items:center;justify-content:center;overflow:hidden' class='wheel-zone'>
+            <img id='img-out-side' class='mri-img' src='/admin/series/{out_sid}/slice/{mid_slice}.png' style='max-height:100%;max-width:100%;object-fit:contain;transition:transform .1s'>
+          </div>
+        </div>
+      </div>
+
+      <!-- Mode 2: Split Wipe A/B -->
+      <div id='view-wipe' style='display:none;background:#020617;border:2px solid #3b82f6;border-radius:12px;padding:16px;text-align:center;color:#e2e8f0'>
+        <div style='margin-bottom:10px'>
+          <label style='font-weight:700;font-size:13.5px'>↔️ Drag Split Wipe Slider (Left: RAD4AI Enhanced | Right: Original Raw):</label>
+          <input type='range' id='wipe-slider' min='0' max='100' value='50' style='width:320px;vertical-align:middle;accent-color:#10b981'>
+        </div>
+        <div style='position:relative;width:512px;height:512px;margin:0 auto;overflow:hidden;border-radius:10px;border:1px solid #334155' class='wheel-zone'>
+          <img id='img-out-wipe' class='mri-img' src='/admin/series/{out_sid}/slice/{mid_slice}.png' style='position:absolute;top:0;left:0;width:100%;height:100%;object-fit:contain'>
+          <div id='wipe-clip' style='position:absolute;top:0;left:0;width:100%;height:100%;clip-path:inset(0 0 0 50%)'>
+            <img id='img-src-wipe' class='mri-img' src='/admin/series/{src_sid}/slice/{mid_slice}.png' style='width:100%;height:100%;object-fit:contain'>
+          </div>
+          <div id='wipe-line' style='position:absolute;top:0;bottom:0;left:50%;width:3px;background:#10b981;box-shadow:0 0 10px #10b981;pointer-events:none'></div>
+        </div>
+      </div>
+
+      <!-- Mode 3: Difference Map -->
+      <div id='view-diff' style='display:none;background:#020617;border:2px solid #f59e0b;border-radius:12px;padding:16px;text-align:center'>
+        <p class='muted' style='color:#94a3b8'>Isolated Noise Map (Bright regions show high-frequency Rician noise removed by RAD4AI while preserving anatomical edges):</p>
+        <img src='/admin/jobs/{job_id}/difference.png' style='height:460px;object-fit:contain;border-radius:10px;border:1px solid #334155'>
+      </div>
+    </section>
+
+    <script>
+      const srcSid = "{src_sid}", outSid = "{out_sid}", total = {total_slices};
+      const sliceSlider = document.getElementById('slice-slider');
+      const sliceLabel = document.getElementById('slice-label');
+      const brSlider = document.getElementById('br-slider');
+      const ctSlider = document.getElementById('ct-slider');
+      const zmSlider = document.getElementById('zm-slider');
+      const wipeSlider = document.getElementById('wipe-slider');
+
+      function updateSlice(idx) {{
+        idx = Math.max(0, Math.min(total - 1, parseInt(idx)));
+        sliceSlider.value = idx;
+        sliceLabel.textContent = (idx + 1) + ' / ' + total;
+        const srcUrl = `/admin/series/${{srcSid}}/slice/${{idx}}.png`;
+        const outUrl = `/admin/series/${{outSid}}/slice/${{idx}}.png`;
+        document.getElementById('img-src-side').src = srcUrl;
+        document.getElementById('img-out-side').src = outUrl;
+        document.getElementById('img-src-wipe').src = srcUrl;
+        document.getElementById('img-out-wipe').src = outUrl;
+      }}
+
+      sliceSlider.addEventListener('input', e => updateSlice(e.target.value));
+      document.querySelectorAll('.wheel-zone').forEach(z => z.addEventListener('wheel', e => {{
+        e.preventDefault();
+        const delta = e.deltaY > 0 ? 1 : -1;
+        updateSlice(parseInt(sliceSlider.value) + delta);
+      }}, {{passive: false}}));
+
+      function updateFilters() {{
+        const br = brSlider.value, ct = ctSlider.value, zm = zmSlider.value / 100.0;
+        document.getElementById('br-label').textContent = br + '%';
+        document.getElementById('ct-label').textContent = ct + '%';
+        document.getElementById('zm-label').textContent = zmSlider.value + '%';
+        document.querySelectorAll('.mri-img').forEach(img => {{
+          img.style.filter = `brightness(${{br}}%) contrast(${{ct}}%)`;
+          img.style.transform = `scale(${{zm}})`;
+        }});
+      }}
+      brSlider.addEventListener('input', updateFilters);
+      ctSlider.addEventListener('input', updateFilters);
+      zmSlider.addEventListener('input', updateFilters);
+      updateFilters();
+
+      wipeSlider.addEventListener('input', e => {{
+        const v = e.target.value;
+        document.getElementById('wipe-clip').style.clipPath = `inset(0 0 0 ${{v}}%)`;
+        document.getElementById('wipe-line').style.left = v + '%';
+      }});
+
+      function setMode(m) {{
+        document.getElementById('view-side').style.display = m === 'side' ? 'grid' : 'none';
+        document.getElementById('view-wipe').style.display = m === 'wipe' ? 'block' : 'none';
+        document.getElementById('view-diff').style.display = m === 'diff' ? 'block' : 'none';
+        document.getElementById('mode-side').className = m === 'side' ? 'btn ai-btn' : 'btn gray';
+        document.getElementById('mode-wipe').className = m === 'wipe' ? 'btn ai-btn' : 'btn gray';
+        document.getElementById('mode-diff').className = m === 'diff' ? 'btn ai-btn' : 'btn gray';
+      }}
+    </script>
+    """
+    return layout(f"Interactive Comparison #{job_id}", page)
+
+
+@router.post("/series/{series_id}/ai-swift")
+def quick_ai_swift(series_id: str, _: str = Depends(require_admin)):
+    if not ORTHANC_ID.fullmatch(series_id):
+        raise HTTPException(400, "Invalid Orthanc series ID")
+    try:
+        with client() as api:
+            response = api.get(f"/series/{series_id}")
+            response.raise_for_status()
+            item = response.json()
+        description = str(item.get("MainDicomTags", {}).get("SeriesDescription", ""))
+        if is_derived_series(description):
+            raise ValueError("Cannot reprocess an already enhanced series")
+        chosen_profile = "RAD4AI_SPINE_PRO" if "RAD4AI_SPINE_PRO" in enabled_profile_names() else "AI_SWIFT_DENOISE"
+        validate_selection(chosen_profile, description, len(item.get("Instances", [])), True, "MEDIUM")
+    except (httpx.HTTPError, ValueError) as exc:
+        raise HTTPException(422, str(exc)) from exc
+    job_id = enqueue_comparison(series_id, chosen_profile, "MEDIUM")
+    return JSONResponse({"ok": True, "job_id": job_id})
 
 
 @router.post("/series/{series_id}/enqueue")
@@ -209,6 +531,8 @@ def enqueue(series_id: str, profile: str = Form(...), strength: str = Form("MILD
             response.raise_for_status()
             item = response.json()
         description = str(item.get("MainDicomTags", {}).get("SeriesDescription", ""))
+        if is_derived_series(description):
+            raise ValueError("Cannot reprocess an already enhanced series")
         validate_selection(profile, description, len(item.get("Instances", [])), bool(acknowledged), strength)
     except (httpx.HTTPError, ValueError) as exc:
         raise HTTPException(422, str(exc)) from exc
@@ -220,50 +544,43 @@ def enqueue(series_id: str, profile: str = Form(...), strength: str = Form("MILD
 def safe_preset(series_id: str, _: str = Depends(require_admin)):
     if not ORTHANC_ID.fullmatch(series_id):
         raise HTTPException(400, "Invalid Orthanc series ID")
-    enabled = enabled_profile_names()
-    plan = [("BASE_MILD", "MILD"), ("EDGE_DENOISE_MILD", "MILD"),
-            ("EDGE_DENOISE_MILD", "MEDIUM")]
-    if any(profile not in enabled for profile, _strength in plan):
-        raise HTTPException(422, "فعّل Baseline وEdge Denoise لتشغيل المقارنة المحافظة")
     try:
         with client() as api:
             response = api.get(f"/series/{series_id}")
             response.raise_for_status()
             item = response.json()
         description = str(item.get("MainDicomTags", {}).get("SeriesDescription", ""))
-        if description.upper().startswith("ENHANC"):
-            raise ValueError("لا يمكن تشغيل Preset على نتيجة مشتقة")
-        for profile, strength in plan:
-            validate_selection(profile, description, len(item.get("Instances", [])), False, strength)
+        if is_derived_series(description):
+            raise ValueError("Cannot run enhancement on a derived series")
     except (httpx.HTTPError, ValueError) as exc:
         raise HTTPException(422, str(exc)) from exc
-    job_ids = [enqueue_comparison(series_id, profile, strength) for profile, strength in plan]
-    return JSONResponse({"ok": True, "count": len(job_ids), "job_ids": job_ids})
+    job_id = enqueue_comparison(series_id, "AI_SWIFT_DENOISE", "MEDIUM")
+    return JSONResponse({"ok": True, "count": 1, "job_ids": [job_id]})
 
 
 @router.post("/series/enqueue-batch")
 def enqueue_batch(series_ids: list[str] = Form(...), profiles: list[str] = Form(...), strength: str = Form("MILD"), acknowledged: str | None = Form(None), _: str = Depends(require_admin)):
     unique_ids = list(dict.fromkeys(series_ids))
     if not unique_ids or len(unique_ids) > 100:
-        raise HTTPException(422, "اختر من 1 إلى 100 سلسلة")
+        raise HTTPException(422, "Select between 1 and 100 series")
     unique_profiles = list(dict.fromkeys(profiles))
     enabled = enabled_profile_names()
     if not unique_profiles or any(profile not in PROFILES or profile not in enabled for profile in unique_profiles):
-        raise HTTPException(422, "أحد المحسّنات المحددة غير متاح")
+        raise HTTPException(422, "One of the selected enhancer profiles is unavailable")
     if len(unique_ids) * len(unique_profiles) > 200:
-        raise HTTPException(422, "الحد الأقصى 200 مهمة في الإضافة الواحدة")
+        raise HTTPException(422, "Maximum 200 jobs per batch submission")
     checked = []
     try:
         with client() as api:
             for series_id in unique_ids:
                 if not ORTHANC_ID.fullmatch(series_id):
-                    raise ValueError("معرف Series غير صحيح")
+                    raise ValueError("Invalid Series ID")
                 response = api.get(f"/series/{series_id}")
                 response.raise_for_status()
                 item = response.json()
                 description = str(item.get("MainDicomTags", {}).get("SeriesDescription", ""))
-                if description.upper().startswith("ENHANC"):
-                    raise ValueError("لا يمكن إعادة معالجة سلسلة ENHANC مشتقة")
+                if is_derived_series(description):
+                    raise ValueError("Cannot reprocess an already enhanced series")
                 for profile in unique_profiles:
                     effective_strength = "MILD" if profile == "BASE_MILD" else strength
                     validate_selection(profile, description, len(item.get("Instances", [])), bool(acknowledged), effective_strength)
@@ -278,31 +595,33 @@ def enqueue_batch(series_ids: list[str] = Form(...), profiles: list[str] = Form(
 @router.get("/tools", response_class=HTMLResponse)
 def tools_page(message: str = "", _: str = Depends(require_admin)):
     requirements = {
-        "BASE_MILD": "جاهز للاستخدام كمرجع للمقارنة.",
-        "DENOISE_MEDIUM": "جاهز للصور ذات الضوضاء الواضحة؛ راجع الحواف الدقيقة.",
-        "EDGE_DENOISE_MILD": "موصى به كبداية: يقلل الضوضاء مع حماية أفضل للحواف.",
-        "N4_BIAS": "جاهز للـVolume المتناسق (8 شرائح أو أكثر) عند وجود Bias مرئي.",
-        "N4_DENOISE": "جاهز عند اجتماع Bias وضوضاء؛ يحتاج مقارنة قبل الاعتماد.",
-        "N4_EDGE_DENOISE": "Bias وضوضاء مع حماية الحواف؛ استخدمه فقط عند وجود Bias مرئي.",
-        "CLAHE_VIEW": "جاهز للعرض البحثي فقط ويحتاج إقرارًا عند التشغيل.",
-        "DIPY_DWI": "ناقص: قراءة b-values وb-vectors والتحقق من DWI قبل إضافة المحرك.",
-        "MONAI_MODEL": "ناقص: ملف نموذج 0.3T موثّق، manifest، preprocessing واختبار قبول.",
+        "AI_SWIFT_DENOISE": "Active & Approved: RAD4AI NAFNet v2.0 AI model trained on 549 real 0.3T MRI slices.",
+        "RAD4AI_SPINE_PRO": "Active & Approved: High-Clarity Spine & Ortho Pro mode with Ultra-Smooth marrow/muscle denoise, micro-edge crisping, and anti-burnout coil shading correction.",
+        "BASE_MILD": "Ready for baseline comparison reference.",
+        "DENOISE_MEDIUM": "Ready for noisy scans; inspect fine anatomical edges.",
+        "EDGE_DENOISE_MILD": "Reduces Rician noise while protecting anatomical edges.",
+        "N4_BIAS": "Ready for consistent volumes (8+ slices) with visible coil shading/bias.",
+        "N4_DENOISE": "Ready for combined bias field and noise; compare before approval.",
+        "N4_EDGE_DENOISE": "Bias correction + edge-preserving denoise; use when coil bias is visible.",
+        "CLAHE_VIEW": "Research viewing only; requires acknowledgement before running.",
+        "DIPY_DWI": "Pending: requires b-values and b-vectors validation for DWI.",
+        "MONAI_MODEL": "Enabled via RAD4AI ONNX NAFNet v2.0 CPU runtime.",
     }
     rows = []
     for tool in list_processing_tools():
-        available = "متاح" if tool["available"] else "غير جاهز"
-        state = "مفعّل" if tool["enabled"] else "متوقف"
+        available = "Available" if tool["available"] else "Unavailable"
+        state = "Enabled" if tool["enabled"] else "Disabled"
         automatic = "Auto eligible" if tool["auto_eligible"] else "Manual comparison only"
         if tool["profile"] == "BASE_MILD":
-            control = "محمي كمرجع"
+            control = "Protected Baseline"
         elif tool["available"]:
-            control = f"<form method='post' action='/admin/tools/{esc(tool['profile'])}/toggle'><button class='btn gray'>تشغيل/إيقاف</button></form>"
+            control = f"<form method='post' action='/admin/tools/{esc(tool['profile'])}/toggle'><button class='btn gray'>Toggle Enable/Disable</button></form>"
         else:
-            control = "ينتظر المتطلبات"
+            control = "Pending Requirements"
         readiness = requirements.get(tool["profile"], str(tool["notes"]))
         rows.append(f"<tr><td><b>{esc(tool['label'])}</b><br><span class='muted'>{esc(tool['profile'])}</span></td><td><span class='badge {'ok' if tool['available'] else 'bad'}'>{available}</span></td><td><span class='badge {'ok' if tool['enabled'] else 'warn'}'>{state}</span></td><td><span class='badge {'ok' if tool['auto_eligible'] else 'warn'}'>{automatic}</span></td><td>{esc(tool['notes'])}</td><td>{esc(readiness)}</td><td>{control}</td></tr>")
-    body = f"<div style='margin-bottom:14px'><a class='btn gray' href='/admin/studies'>العودة للحالات</a></div><section class='panel'><h2>إدارة أدوات التحسين</h2><p class='muted'>تعطيل الأداة يخفيها من الاختيارات الجديدة. حالة «غير جاهز» تمنع تشغيل أداة ناقصة أو غير موثقة. Manual comparison only تعني أنها لا تدخل Auto Processing أو Auto Return.</p><div class='table-wrap'><table><tr><th>الأداة</th><th>التوفر</th><th>الحالة</th><th>Automation Safety</th><th>الإرشاد</th><th>الجاهزية/المطلوب</th><th>التحكم</th></tr>{''.join(rows)}</table></div></section>"
-    return layout("إدارة أدوات التحسين", body, message)
+    body = f"<section class='panel'><h2>⚙️ Enhancement Engines & Tools Management</h2><p class='muted'>The <b>RAD4AI Denoise (NAFNet v2.0)</b> engine is active as the primary clinical enhancer.</p><div class='table-wrap'><table><tr><th>Tool / Engine</th><th>Availability</th><th>Status</th><th>Automation Safety</th><th>Guidance</th><th>Readiness / Notes</th><th>Action</th></tr>{''.join(rows)}</table></div></section>"
+    return layout("Enhancement Tools", body, message)
 
 
 @router.post("/tools/{profile}/toggle")
@@ -313,39 +632,41 @@ def toggle_tool(profile: str, _: str = Depends(require_admin)):
         result = db.execute("UPDATE processing_tools SET enabled=1-enabled WHERE profile=? AND available=1", (profile,))
         if result.rowcount != 1:
             raise HTTPException(404, "Tool unavailable")
-    return RedirectResponse("/admin/tools?message=" + quote("تم تحديث حالة الأداة"), 303)
+    return RedirectResponse("/admin/tools?message=" + quote("Tool status updated"), 303)
 
 
 @router.post("/jobs/{job_id}/retry")
-def retry(job_id: int, _: str = Depends(require_admin)):
+def retry_job(job_id: int, _: str = Depends(require_admin)):
     with connect() as db:
-        db.execute("UPDATE comparison_jobs SET status='queued',error=NULL,approved=0,qc_status='PENDING',qc_reasons='',decision='',review_notes='',reviewed_at=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=?", (job_id,))
-    return RedirectResponse("/admin/studies?message=" + quote("Job returned to queue"), 303)
+        result = db.execute("UPDATE comparison_jobs SET status='queued',error=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=? AND status='failed'", (job_id,))
+        if result.rowcount != 1:
+            raise HTTPException(409, "Only failed jobs can be retried")
+    return RedirectResponse("/admin/studies?message=" + quote("Job re-queued for processing"), 303)
 
 
 @router.post("/jobs/{job_id}/evaluate")
 def evaluate_job(job_id: int, decision: str = Form(...), notes: str = Form(""), _: str = Depends(require_admin)):
     if decision not in {"best", "acceptable", "rejected"}:
-        raise HTTPException(422, "قرار التقييم غير صحيح")
+        raise HTTPException(422, "Invalid review decision")
     notes = notes.strip()[:1000]
     with connect() as db:
         job = db.execute("SELECT status,qc_status FROM comparison_jobs WHERE id=?", (job_id,)).fetchone()
         if job is None:
-            raise HTTPException(404, "Job غير موجود")
+            raise HTTPException(404, "Job not found")
         if job["status"] != "ready":
-            raise HTTPException(409, "لا يمكن تقييم النتيجة قبل اكتمالها")
+            raise HTTPException(409, "Cannot evaluate job before completion")
         if job["qc_status"] not in {"PASS", "WARN"} and decision in {"best", "acceptable"}:
-            raise HTTPException(409, "Quality Gate غير ناجح أو لم يُحسب؛ أعد المعالجة أو ارفض النتيجة")
+            raise HTTPException(409, "Quality Gate did not pass; reprocess or reject result")
         db.execute("UPDATE comparison_jobs SET decision=?,review_notes=?,reviewed_at=CURRENT_TIMESTAMP,approved=?,updated_at=CURRENT_TIMESTAMP WHERE id=?",
                    (decision, notes, int(decision in {"best", "acceptable"}), job_id))
-    return RedirectResponse("/admin/studies?message=" + quote("تم حفظ تقييم الطبيب؛ لم يتم إرسال النتيجة"), 303)
+    return RedirectResponse("/admin/studies?message=" + quote("Radiologist review saved"), 303)
 
 
 @router.get("/jobs/{job_id}/difference.png")
 def difference_map(job_id: int, _: str = Depends(require_admin)):
     job = get_comparison_job(job_id)
     if job is None or job["status"] != "ready" or not job["output_series_id"]:
-        raise HTTPException(404, "Difference Map غير متاحة")
+        raise HTTPException(404, "Difference Map unavailable")
     try:
         datasets = []
         with client() as api:
@@ -360,12 +681,12 @@ def difference_map(job_id: int, _: str = Depends(require_admin)):
                 series.sort(key=lambda ds: (int(ds.get("InstanceNumber", 0)), str(ds.SOPInstanceUID)))
                 datasets.append(series)
         if not datasets[0] or len(datasets[0]) != len(datasets[1]):
-            raise ValueError("السلسلتان غير متطابقتين")
+            raise ValueError("Source and output series slice counts do not match")
         index = len(datasets[0]) // 2
         source = datasets[0][index].pixel_array.astype(np.float32)
         output = datasets[1][index].pixel_array.astype(np.float32)
         if source.shape != output.shape:
-            raise ValueError("أبعاد الصور غير متطابقة")
+            raise ValueError("Image dimensions do not match")
         difference = np.abs(output - source)
         scale = max(float(np.percentile(difference, 99)), 1.0)
         intensity = np.clip(difference / scale, 0, 1)
@@ -383,14 +704,14 @@ def approve(job_id: int, _: str = Depends(require_admin)):
             raise HTTPException(409, "Protocol Study result is comparison-only and cannot enter Return Queue")
         result = db.execute("UPDATE comparison_jobs SET approved=1,updated_at=CURRENT_TIMESTAMP WHERE id=? AND status='ready' AND qc_status IN ('PASS','WARN') AND decision IN ('best','acceptable')", (job_id,))
         if result.rowcount != 1:
-            raise HTTPException(409, "سجل تقييم الطبيب كأفضل أو مقبول قبل اعتماد الإرجاع")
+            raise HTTPException(409, "Record a radiologist review as Best or Acceptable before approving PACS return")
         job = db.execute("SELECT * FROM comparison_jobs WHERE id=?", (job_id,)).fetchone()
     with client() as api:
         center = source_center(api, job["source_series_id"])
     if center is None or center["return_policy"] == "DISABLED":
-        return RedirectResponse("/admin/studies?message=" + quote("تم الاعتماد؛ الإرجاع غير مفعّل لهذا المركز"), 303)
+        return RedirectResponse("/admin/studies?message=" + quote("Approved; PACS return is disabled for this center"), 303)
     if center["last_echo_status"] != "PASS":
-        return RedirectResponse("/admin/studies?error=" + quote("تم الاعتماد لكن لم يُرسل: يجب نجاح C-ECHO من صفحة المركز أولًا"), 303)
+        return RedirectResponse("/admin/studies?error=" + quote("Approved, but not queued: C-ECHO must pass on the Center page first"), 303)
     enqueue_return(job_id, center["id"], job["output_series_id"])
     audit("MANUAL_RETURN_QUEUED", "comparison_job", job_id, f"center={center['name']}", actor=_)
-    return RedirectResponse("/admin/studies?message=" + quote("تم الاعتماد وإضافة النتيجة إلى Return Queue"), 303)
+    return RedirectResponse("/admin/studies?message=" + quote("Approved and added to PACS Return Queue"), 303)

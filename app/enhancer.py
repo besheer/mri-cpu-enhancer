@@ -54,7 +54,14 @@ def conservative_baseline(image: np.ndarray) -> np.ndarray:
 
 
 def derived_series_description(original: str, prefix: str = DEFAULT_PREFIX) -> str:
-    return f"{prefix}{original.strip() or 'MR SERIES'}"[:64]
+    orig = original.strip() or 'MR SERIES'
+    if 'PRO' in prefix:
+        tag = '[RAD4AI-PRO]'
+    elif 'AISWIFT' in prefix or 'RAD4AI' in prefix:
+        tag = '[RAD4AI]'
+    else:
+        tag = '[ENHANCED]'
+    return f"{orig} {tag}"[:64]
 
 
 def enhance_dataset(
@@ -66,6 +73,10 @@ def enhance_dataset(
     # Dataset.copy() is shallow and would mutate shared DataElements in the source.
     output = copy.deepcopy(ds)
     output.PixelData = conservative_baseline(ds.pixel_array).tobytes()
+    try:
+        output.SeriesNumber = int(ds.get('SeriesNumber', 0)) + 100
+    except (ValueError, TypeError):
+        pass
     output.SeriesInstanceUID = series_uid
     output.SOPInstanceUID = generate_uid()
     output.file_meta = ds.file_meta.copy()
@@ -91,6 +102,10 @@ def derive_with_pixels(ds: FileDataset, pixels: np.ndarray, series_uid: str,
         raise UnsupportedDicom("Processed pixels do not match source geometry")
     output = copy.deepcopy(ds)
     output.PixelData = pixels.astype(ds.pixel_array.dtype, copy=False).tobytes()
+    try:
+        output.SeriesNumber = int(ds.get('SeriesNumber', 0)) + 100
+    except (ValueError, TypeError):
+        pass
     output.SeriesInstanceUID = series_uid
     output.SOPInstanceUID = generate_uid()
     output.file_meta = ds.file_meta.copy()

@@ -17,7 +17,7 @@ from app.store import audit, connect, enabled_profile_names, list_centers
 
 router = APIRouter(prefix="/admin/protocols", tags=["protocol-study"])
 ORTHANC_ID = re.compile(r"^[0-9a-f]{8}(?:-[0-9a-f]{8}){4}$")
-DECISIONS = {"ACCEPT": "Accept / مقبول", "REVIEW": "Review / مراجعة", "REJECT": "Reject / مرفوض"}
+DECISIONS = {"ACCEPT": "Accept", "REVIEW": "Needs Review", "REJECT": "Reject"}
 
 
 def calculate_reduction(standard_seconds: float, fast_seconds: float) -> float:
@@ -116,7 +116,7 @@ def protocols(message: str = "", error: str = "", _: str = Depends(require_admin
     except httpx.HTTPError as exc:
         options = ""
         error = error or f"Orthanc unavailable: {exc}"
-    centers = "<option value=''>Unassigned / غير محدد</option>" + "".join(
+    centers = "<option value=''>Unassigned</option>" + "".join(
         f"<option value='{c['id']}'>{esc(c['name'])}</option>" for c in list_centers()
     )
     with connect() as db:
@@ -143,7 +143,7 @@ def protocols(message: str = "", error: str = "", _: str = Depends(require_admin
             f"<form method='post' action='/admin/protocols/{row['id']}/archive' onsubmit=\"return confirm('Archive protocol study?')\"><button class='btn red'>Archive</button></form></div></div></details>"
         )
     create = f"""<section class='panel'><div class='panel-head'><h2>New Protocol Acceleration Study</h2><span class='badge warn'>No Auto Return</span></div>
-    <p class='muted'>اربط سلسلتين أصليتين من نفس الفحص: Standard كاملة وFast مسرعة. يمنع النظام السلاسل المشتقة والإرجاع التلقائي.</p>
+    <p class='muted'>Link two original series from the same study: a full-duration Standard scan and an accelerated Fast scan. Derived series and auto-return are blocked for safety.</p>
     <form method='post' action='/admin/protocols' class='grid'>
       <div class='field'><label>Study title *</label><input name='title' maxlength='150' required placeholder='Knee PD Fast 25% Pilot'></div>
       <div class='field'><label>Center</label><select name='center_id'>{centers}</select></div>
@@ -257,10 +257,10 @@ def protocol_detail(protocol_id: int, message: str = "", error: str = "", _: str
     <div class='cards'><div class='card'><span class='muted'>Standard</span><div class='number'>{study['standard_seconds']:.0f}s</div></div><div class='card'><span class='muted'>Fast</span><div class='number'>{study['fast_seconds']:.0f}s</div></div><div class='card'><span class='muted'>Reduction</span><div class='number'>{study['reduction_percent']:.1f}%</div></div><div class='card'><span class='muted'>Decision</span><div class='number' style='font-size:18px'>{esc(study['status'])}</div></div></div>
     <p><b>{esc(study['anatomy'])} · {esc(study['sequence'])}</b><br><span class='muted'>{esc(study['scanner_model'])} · {esc(study['coil'])}</span></p><p>{esc(study['protocol_notes'])}</p>
     <p class='route'>STANDARD: {esc(study['standard_series_id'])}<br>FAST: {esc(study['fast_series_id'])}</p></section>
-    <section class='panel'><h2>Enhance Fast Series</h2><p class='muted'>النتائج تبقى داخل دراسة المقارنة. قاعدة البيانات تمنع إضافتها إلى Return Queue.</p>
+    <section class='panel'><h2>Enhance Fast Series</h2><p class='muted'>Results remain inside the comparison study. The database blocks them from entering the PACS Return Queue.</p>
     <form method='post' action='/admin/protocols/{protocol_id}/enhance' class='actions'><select name='profile'>{profiles}</select><select name='strength'>{strengths}</select><label class='muted'><input type='checkbox' name='acknowledged'> Research acknowledgement</label><button class='btn'>Add comparison job</button></form>
     <div class='table-wrap'><table><tr><th>Job</th><th>Profile</th><th>Status/QC</th><th>Output</th><th>Metrics</th><th>Error</th></tr>{''.join(job_rows) or '<tr><td colspan="6" class="empty">No enhancement jobs.</td></tr>'}</table></div></section>
-    <section class='panel'><h2>Medical Review / تقييم طبي</h2><p class='muted'>قيّم المقارنة مع تثبيت Window/Level والـslice نفسه. الدرجات من 1 (ضعيف) إلى 5 (ممتاز)، بينما Artifacts من 1 (قليلة) إلى 5 (شديدة).</p>
+    <section class='panel'><h2>Medical Review</h2><p class='muted'>Evaluate the comparison at identical Window/Level and slice position. Scores range from 1 (poor) to 5 (excellent), while Artifacts range from 1 (minimal) to 5 (severe).</p>
     <form method='post' action='/admin/protocols/{protocol_id}/review' class='grid'>
       <div class='field'><label>Image quality</label><select name='image_quality'>{options}</select></div><div class='field'><label>Diagnostic confidence</label><select name='diagnostic_confidence'>{options}</select></div>
       <div class='field'><label>Noise control</label><select name='noise'>{options}</select></div><div class='field'><label>Sharpness/detail</label><select name='sharpness'>{options}</select></div>

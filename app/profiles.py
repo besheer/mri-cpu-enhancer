@@ -8,44 +8,48 @@ from scipy.ndimage import gaussian_filter, sobel
 from app.enhancer import conservative_baseline
 
 PROFILE_INFO = {
-    "BASE_MILD": {"label": "Baseline محافظ", "guidance": "مرجع آمن نسبيًا ومناسب للاختبار الأول.", "min_slices": 1, "research_only": False},
-    "DENOISE_MEDIUM": {"label": "Denoise متوسط", "guidance": "للصور ذات الضوضاء الواضحة مع مراجعة الحواف الدقيقة.", "min_slices": 1, "research_only": False},
-    "EDGE_DENOISE_MILD": {"label": "Edge Denoise محافظ", "guidance": "تقليل ضوضاء محافظ مع حماية أفضل للحواف الدقيقة.", "min_slices": 1, "research_only": False},
-    "N4_BIAS": {"label": "N4 Bias فقط", "guidance": "لتفاوت الإضاءة التدريجي، ويحتاج Volume متناسقًا.", "min_slices": 8, "research_only": False},
-    "N4_DENOISE": {"label": "N4 + Denoise", "guidance": "عند اجتماع تفاوت الإضاءة والضوضاء؛ قارن قبل الاعتماد.", "min_slices": 8, "research_only": False},
-    "N4_EDGE_DENOISE": {"label": "N4 + Edge Denoise", "guidance": "Bias واضح مع ضوضاء؛ يحافظ على الحواف أكثر من Gaussian.", "min_slices": 8, "research_only": False},
-    "CLAHE_VIEW": {"label": "CLAHE للعرض البحثي", "guidance": "قد يضخم الضوضاء والتباين؛ لا يُستخدم كنتيجة تشخيصية.", "min_slices": 1, "research_only": True},
+    "AI_SWIFT_DENOISE": {"label": "RAD4AI Denoise (NAFNet v2.0)", "guidance": "Deep learning residual denoising with anisotropic edge preservation.", "min_slices": 1, "research_only": False},
+    "RAD4AI_SPINE_PRO": {"label": "RAD4AI Spine & Ortho Pro (High-Clarity)", "guidance": "Ultra-smooth marrow/muscle denoising + micro-edge disc crisping + anti-burnout coil shading correction.", "min_slices": 1, "research_only": False},
+    "BASE_MILD": {"label": "Conservative Baseline", "guidance": "Safe reference filter suitable for initial baseline comparison.", "min_slices": 1, "research_only": False},
+    "DENOISE_MEDIUM": {"label": "Medium Denoise", "guidance": "For noticeably noisy scans; review fine anatomical borders.", "min_slices": 1, "research_only": False},
+    "EDGE_DENOISE_MILD": {"label": "Edge-Preserving Denoise", "guidance": "Conservative noise reduction with curvature anisotropic edge protection.", "min_slices": 1, "research_only": False},
+    "N4_BIAS": {"label": "N4 Bias Field Only", "guidance": "For gradual coil illumination inhomogeneity; requires consistent 3D volume.", "min_slices": 8, "research_only": False},
+    "N4_DENOISE": {"label": "N4 + Denoise", "guidance": "Combined bias field correction and smoothing; compare before approval.", "min_slices": 8, "research_only": False},
+    "N4_EDGE_DENOISE": {"label": "N4 + Edge Denoise", "guidance": "Bias field correction with anisotropic edge-preserving denoise.", "min_slices": 8, "research_only": False},
+    "CLAHE_VIEW": {"label": "CLAHE (Research View)", "guidance": "Adaptive histogram contrast boost; not for primary diagnosis.", "min_slices": 1, "research_only": True},
 }
 PROFILES = {key: value["label"] for key, value in PROFILE_INFO.items()}
-STRENGTHS = {"MILD": "محافظ", "MEDIUM": "متوسط", "STRONG": "قوي — بحثي"}
+STRENGTHS = {"MILD": "Mild", "MEDIUM": "Medium", "STRONG": "Strong (Research)"}
 
 
 def recommendation(description: str, instances: int) -> tuple[str, str]:
     name = description.upper()
     if any(word in name for word in ("SCANO", "LOCALIZER", "SURVEY")):
-        return "BASE_MILD", "Localizer/Scano: لا تستخدم N4 أو تحسينًا قويًا."
-    if instances < 8:
-        return "DENOISE_MEDIUM", "Series قصيرة: استخدم Denoise أو Baseline فقط."
-    return "EDGE_DENOISE_MILD", "ابدأ بتقليل ضوضاء محافظ للحواف؛ استخدم N4 فقط عند وجود Bias مرئي."
+        return "BASE_MILD", "Localizer/Survey: Do not apply N4 or aggressive enhancement."
+    if any(word in name for word in ("SPINE", "LUMBAR", "CERVICAL", "DORSAL", "THORACIC", "SHOULDER", "KNEE", "JOINT")):
+        return "RAD4AI_SPINE_PRO", "Recommended: RAD4AI Spine & Ortho Pro with coil shading correction and crisp disc/tendon borders."
+    return "AI_SWIFT_DENOISE", "Recommended: RAD4AI NAFNet v2.0 AI model trained on 0.3T MRI with anatomical edge preservation."
 
 
 def validate_selection(profile: str, description: str, instances: int, acknowledged: bool = False,
                        strength: str = "MEDIUM") -> None:
     if profile not in PROFILE_INFO:
-        raise ValueError("Processing profile غير معروف")
+        raise ValueError("Unknown processing profile")
     if strength not in STRENGTHS:
-        raise ValueError("Processing level غير معروف")
+        raise ValueError("Unknown processing strength level")
     info = PROFILE_INFO[profile]
     if instances < int(info["min_slices"]):
-        raise ValueError(f"{profile} يحتاج {info['min_slices']} شرائح على الأقل")
+        raise ValueError(f"{profile} requires at least {info['min_slices']} slices")
     if profile.startswith("N4") and any(x in description.upper() for x in ("SCANO", "LOCALIZER", "SURVEY")):
-        raise ValueError("لا يُسمح بتطبيق N4 على Localizer/Scano")
+        raise ValueError("N4 is not permitted on Localizer/Survey series")
     if info["research_only"] and not acknowledged:
-        raise ValueError("يجب تأكيد أن CLAHE للعرض البحثي فقط")
+        raise ValueError("Research acknowledgment is required for CLAHE")
     if strength == "STRONG" and not acknowledged:
-        raise ValueError("المستوى القوي بحثي ويحتاج تأكيدًا صريحًا")
+        raise ValueError("Strong enhancement level requires explicit research acknowledgment")
 
 PREFIXES = {
+    "AI_SWIFT_DENOISE": "ENHANC-RAD4AI-",
+    "RAD4AI_SPINE_PRO": "ENHANC-RAD4AI-PRO-",
     "BASE_MILD": "ENHANC-BASE-",
     "DENOISE_MEDIUM": "ENHANC-DENOISE-",
     "EDGE_DENOISE_MILD": "ENHANC-EDGE-",
@@ -113,7 +117,12 @@ def process_volume(volume: np.ndarray, profile: str, strength: str = "MEDIUM",
         raise ValueError("A 3D DICOM series is required")
     started = time.perf_counter()
     source = volume
-    if profile == "BASE_MILD":
+    if profile in {"AI_SWIFT_DENOISE", "RAD4AI_SPINE_PRO"}:
+        from app.ai_engine import ai_engine
+        strength_val = {"MILD": 0.5, "MEDIUM": 0.8, "STRONG": 1.0}[strength]
+        mode = "spine_pro" if profile == "RAD4AI_SPINE_PRO" else "standard"
+        output = ai_engine.enhance_volume(source, strength=strength_val, mode=mode)
+    elif profile == "BASE_MILD":
         output = np.stack([conservative_baseline(x) for x in source])
     elif profile == "DENOISE_MEDIUM":
         blend = {"MILD": 0.35, "MEDIUM": 0.55, "STRONG": 0.70}[strength]

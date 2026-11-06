@@ -257,17 +257,22 @@ def initialize() -> None:
         ])
         db.execute("UPDATE comparison_jobs SET status='queued',error='Recovered after restart' WHERE status='processing'")
         tools = [
-            ("BASE_MILD", "Baseline محافظ", 1, 1, "المرجع الافتراضي"),
-            ("DENOISE_MEDIUM", "Denoise متوسط", 1, 1, "للضوضاء الواضحة"),
-            ("EDGE_DENOISE_MILD", "Edge Denoise محافظ", 1, 1, "تقليل ضوضاء مع حماية الحواف"),
-            ("N4_BIAS", "N4 Bias فقط", 1, 1, "لتفاوت الإضاءة على Volume"),
-            ("N4_DENOISE", "N4 + Denoise", 1, 1, "Bias وضوضاء معًا"),
-            ("N4_EDGE_DENOISE", "N4 + Edge Denoise", 1, 1, "Bias وضوضاء مع حماية الحواف"),
-            ("CLAHE_VIEW", "CLAHE للعرض البحثي", 0, 1, "عرض بحثي فقط"),
-            ("MONAI_MODEL", "MONAI Model", 0, 0, "غير متاح حتى رفع نموذج موثق"),
-            ("DIPY_DWI", "DIPY DWI", 0, 0, "غير متاح حتى دعم DWI metadata"),
+            ("AI_SWIFT_DENOISE", "RAD4AI Denoise (NAFNet v2.0)", 1, 1, "Clinical 0.3T AI Denoise & Edge Protection"),
+            ("RAD4AI_SPINE_PRO", "RAD4AI Spine & Ortho Pro (High-Clarity)", 1, 1, "Ultra-Smooth Denoise + Disc/Edge Crisping + Anti-Burnout Coil Equalization"),
+            ("BASE_MILD", "Conservative Baseline", 1, 1, "Safe baseline reference"),
+            ("DENOISE_MEDIUM", "Medium Denoise", 1, 1, "Standard Rician noise reduction"),
+            ("EDGE_DENOISE_MILD", "Edge-Preserving Denoise", 1, 1, "Noise reduction with edge protection"),
+            ("N4_BIAS", "N4 Bias Correction", 1, 1, "Coil shading & bias field correction"),
+            ("N4_DENOISE", "N4 + Denoise", 1, 1, "Combined bias field & noise reduction"),
+            ("N4_EDGE_DENOISE", "N4 + Edge Denoise", 1, 1, "Bias correction + edge-preserving denoise"),
+            ("CLAHE_VIEW", "CLAHE Research View", 0, 1, "Local contrast enhancement (research only)"),
+            ("MONAI_MODEL", "MONAI Model", 1, 1, "Enabled via RAD4AI ONNX Runtime"),
+            ("DIPY_DWI", "DIPY DWI", 0, 0, "Pending DWI metadata support"),
         ]
         db.executemany("INSERT OR IGNORE INTO processing_tools(profile,label,enabled,available,notes) VALUES(?,?,?,?,?)", tools)
+        for p_code, p_lbl, _en, _av, p_notes in tools:
+            db.execute("UPDATE processing_tools SET label=?, notes=? WHERE profile=?", (p_lbl, p_notes, p_code))
+        db.execute("UPDATE model_registry SET name='RAD4AI-NAFNet-03T-Clinical' WHERE name LIKE '%Swift%'")
         # Reference/display/unvalidated engines remain available for controlled
         # comparison but can never be selected by branch automation.
         db.execute("UPDATE processing_tools SET auto_eligible=0 WHERE profile IN ('BASE_MILD','CLAHE_VIEW','MONAI_MODEL','DIPY_DWI')")

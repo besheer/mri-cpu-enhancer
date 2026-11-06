@@ -37,7 +37,7 @@ ORTHANC_ID = re.compile(r"^[0-9a-f]{8}(?:-[0-9a-f]{8}){4}$")
 
 def is_derived_series(description: str) -> bool:
     u = description.upper()
-    return u.startswith("ENHANC") or "[AI-SWIFT]" in u or "[RAD4AI]" in u or "[RAD4AI-PRO]" in u or "[RAD4AI-1.5T]" in u or "[ENHANCED]" in u
+    return u.startswith("ENHANC") or "[AI-SWIFT]" in u or "[RAD4AI]" in u or "[RAD4AI-PRO]" in u or "[RAD4AI-1.5T]" in u or "[RAD4AI-GE-AW]" in u or "[ENHANCED]" in u
 
 
 def client() -> httpx.Client:
@@ -70,7 +70,7 @@ def thumbnail(series_id: str, _: str = Depends(require_admin)):
 
 
 @router.get("/series/{series_id}/slice/{slice_index}.png")
-def series_slice_png(series_id: str, slice_index: int, _: str = Depends(require_admin)):
+def series_slice_png(series_id: str, slice_index: int, slab: str = "single", lut: str = "gray", _: str = Depends(require_admin)):
     if not ORTHANC_ID.fullmatch(series_id):
         raise HTTPException(400, "Invalid series ID")
     try:
@@ -88,11 +88,56 @@ def series_slice_png(series_id: str, slice_index: int, _: str = Depends(require_
                     inst_meta.append((num, iid))
             inst_meta.sort(key=lambda x: x[0])
             idx = max(0, min(slice_index, len(inst_meta) - 1))
-            chosen_id = inst_meta[idx][1]
-            preview = api.get(f"/instances/{chosen_id}/preview")
-            preview.raise_for_status()
-        return Response(preview.content, media_type=preview.headers.get("content-type", "image/png"),
-                        headers={"Cache-Control": "private, max-age=120"})
+
+            # Fast path if single slice and default grayscale
+            if slab == "single" and lut == "gray":
+                chosen_id = inst_meta[idx][1]
+                preview = api.get(f"/instances/{chosen_id}/preview")
+                preview.raise_for_status()
+                return Response(preview.content, media_type=preview.headers.get("content-type", "image/png"),
+                                headers={"Cache-Control": "private, max-age=120"})
+
+            # GE AW Volume Viewer Slab Projection (MIP-3, MIP-5, MinIP-3, AVG-3) & READY View Color LUTs
+            radius = 2 if slab in ("mip5", "avg5") else 1 if slab in ("mip3", "minip3", "avg3") else 0
+            start_i = max(0, idx - radius)
+            end_i = min(len(inst_meta) - 1, idx + radius)
+            arrays = []
+            for s_i in range(start_i, end_i + 1):
+                raw_dcm = api.get(f"/instances/{inst_meta[s_i][1]}/file")
+                raw_dcm.raise_for_status()
+                ds = pydicom.dcmread(io.BytesIO(raw_dcm.content))
+                arrays.append(ds.pixel_array.astype(np.float32))
+            stack = np.stack(arrays, axis=0)
+            if slab.startswith("mip"):
+                img2d = np.max(stack, axis=0)
+            elif slab.startswith("minip"):
+                img2d = np.min(stack, axis=0)
+            elif slab.startswith("avg"):
+                img2d = np.mean(stack, axis=0)
+            else:
+                img2d = stack[len(stack) // 2]
+
+            p1, p99 = np.percentile(img2d, (1.0, 99.5))
+            norm = np.clip((img2d - p1) / max(float(p99 - p1), 1.0), 0.0, 1.0)
+            if lut == "ge_gold":
+                r_ch = np.clip(norm * 1.35, 0.0, 1.0)
+                g_ch = np.clip(norm ** 1.25 * 1.05, 0.0, 1.0)
+                b_ch = np.clip(norm ** 2.2 * 0.65, 0.0, 1.0)
+                rgb = np.stack([r_ch * 255, g_ch * 255, b_ch * 255], axis=-1).astype(np.uint8)
+            elif lut == "hot_iron":
+                r_ch = np.clip(norm * 2.0, 0.0, 1.0)
+                g_ch = np.clip((norm - 0.35) * 2.0, 0.0, 1.0)
+                b_ch = np.clip((norm - 0.70) * 3.3, 0.0, 1.0)
+                rgb = np.stack([r_ch * 255, g_ch * 255, b_ch * 255], axis=-1).astype(np.uint8)
+            elif lut == "pet_rainbow":
+                r_ch = np.clip(1.5 - np.abs(4.0 * norm - 3.0), 0.0, 1.0) * (norm > 0.05)
+                g_ch = np.clip(1.5 - np.abs(4.0 * norm - 2.0), 0.0, 1.0) * (norm > 0.05)
+                b_ch = np.clip(1.5 - np.abs(4.0 * norm - 1.0), 0.0, 1.0) * (norm > 0.05)
+                rgb = np.stack([r_ch * 255, g_ch * 255, b_ch * 255], axis=-1).astype(np.uint8)
+            else:
+                g8 = (norm * 255.0).astype(np.uint8)
+                rgb = np.stack([g8, g8, g8], axis=-1)
+        return Response(png_rgb(rgb), media_type="image/png", headers={"Cache-Control": "private, max-age=60"})
     except (httpx.HTTPError, ValueError) as exc:
         raise HTTPException(404, str(exc)) from exc
 
@@ -394,6 +439,30 @@ def interactive_compare(job_id: int, _: str = Depends(require_admin)):
           </label>
           <input type='range' id='zm-slider' min='100' max='260' value='100' style='width:100%;margin-top:6px;accent-color:#3b82f6'>
         </div>
+        <div>
+          <label style='font-size:13px;font-weight:700;display:block;margin-bottom:5px'>🧊 GE AW Volume Slab Mode:</label>
+          <select id='slab-select' style='width:100%;padding:6px 8px;border-radius:7px;background:#0f172a;color:#38bdf8;border:1px solid #334155;font-weight:700'>
+            <option value='single'>Single Slice (2D Native)</option>
+            <option value='mip3'>GE Volume MIP (3-Slice Vessel/MRV)</option>
+            <option value='mip5'>GE Volume MIP (5-Slice Thick)</option>
+            <option value='avg3'>GE Thick-Slice Average (3-Slice Ortho)</option>
+            <option value='minip3'>GE Volume MinIP (3-Slice Dark Fluid)</option>
+          </select>
+        </div>
+        <div>
+          <label style='font-size:13px;font-weight:700;display:block;margin-bottom:5px'>🎨 GE READY View Color LUT:</label>
+          <select id='lut-select' style='width:100%;padding:6px 8px;border-radius:7px;background:#0f172a;color:#34d399;border:1px solid #334155;font-weight:700'>
+            <option value='gray'>Clinical Grayscale (Standard)</option>
+            <option value='ge_gold'>GE AW Warm Gold (Perfusion/Ortho)</option>
+            <option value='hot_iron'>GE Hot Iron (STIR Edema / Thermal)</option>
+            <option value='pet_rainbow'>GE READY View Spectrum (Multi-Parametric)</option>
+          </select>
+        </div>
+      </div>
+
+      <div id='roi-bar' style='display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;background:#0b1528;border:1px solid #1e3a5f;border-radius:10px;padding:9px 14px;margin-bottom:14px;font-size:13px;color:#cbd5e1'>
+        <div>🎯 <b>GE AW Interactive ROI & SNR Probe:</b> <span style='color:#94a3b8'>Click anywhere on the MRI image to measure local tissue ROI (24×24 px) Before vs. After.</span></div>
+        <div id='roi-readout' style='font-family:Consolas,monospace;color:#38bdf8;font-weight:700'>Click on image to inspect tissue SNR & SD...</div>
       </div>
 
       <!-- Mode 1: Side by Side -->
@@ -446,13 +515,18 @@ def interactive_compare(job_id: int, _: str = Depends(require_admin)):
       const ctSlider = document.getElementById('ct-slider');
       const zmSlider = document.getElementById('zm-slider');
       const wipeSlider = document.getElementById('wipe-slider');
+      const slabSelect = document.getElementById('slab-select');
+      const lutSelect = document.getElementById('lut-select');
 
       function updateSlice(idx) {{
         idx = Math.max(0, Math.min(total - 1, parseInt(idx)));
         sliceSlider.value = idx;
         sliceLabel.textContent = (idx + 1) + ' / ' + total;
-        const srcUrl = `/admin/series/${{srcSid}}/slice/${{idx}}.png`;
-        const outUrl = `/admin/series/${{outSid}}/slice/${{idx}}.png`;
+        const slab = slabSelect.value;
+        const lut = lutSelect.value;
+        const q = `?slab=${{encodeURIComponent(slab)}}&lut=${{encodeURIComponent(lut)}}`;
+        const srcUrl = `/admin/series/${{srcSid}}/slice/${{idx}}.png${{q}}`;
+        const outUrl = `/admin/series/${{outSid}}/slice/${{idx}}.png${{q}}`;
         document.getElementById('img-src-side').src = srcUrl;
         document.getElementById('img-out-side').src = outUrl;
         document.getElementById('img-src-wipe').src = srcUrl;
@@ -460,6 +534,45 @@ def interactive_compare(job_id: int, _: str = Depends(require_admin)):
       }}
 
       sliceSlider.addEventListener('input', e => updateSlice(e.target.value));
+      slabSelect.addEventListener('change', () => updateSlice(sliceSlider.value));
+      lutSelect.addEventListener('change', () => updateSlice(sliceSlider.value));
+
+      function computeRoiStats(imgEl, normX, normY) {{
+        const c = document.createElement('canvas');
+        const w = imgEl.naturalWidth || 256, h = imgEl.naturalHeight || 256;
+        c.width = w; c.height = h;
+        const ctx = c.getContext('2d');
+        ctx.drawImage(imgEl, 0, 0);
+        const rSize = 20;
+        const cx = Math.max(rSize, Math.min(w - rSize, Math.round(normX * w)));
+        const cy = Math.max(rSize, Math.min(h - rSize, Math.round(normY * h)));
+        const data = ctx.getImageData(cx - rSize/2, cy - rSize/2, rSize, rSize).data;
+        let vals = [];
+        for (let i = 0; i < data.length; i += 4) {{
+          vals.push((data[i] + data[i+1] + data[i+2]) / 3.0);
+        }}
+        const mean = vals.reduce((a,b) => a+b, 0) / vals.length;
+        const variance = vals.reduce((a,b) => a + (b - mean)**2, 0) / vals.length;
+        const sd = Math.max(Math.sqrt(variance), 0.4);
+        return {{ mean: mean.toFixed(1), sd: sd.toFixed(2), snr: (mean / sd).toFixed(1) }};
+      }}
+
+      ['img-src-side', 'img-out-side'].forEach(id => {{
+        const el = document.getElementById(id);
+        el.style.cursor = 'crosshair';
+        el.addEventListener('click', e => {{
+          const rect = el.getBoundingClientRect();
+          const nx = (e.clientX - rect.left) / rect.width;
+          const ny = (e.clientY - rect.top) / rect.height;
+          try {{
+            const s1 = computeRoiStats(document.getElementById('img-src-side'), nx, ny);
+            const s2 = computeRoiStats(document.getElementById('img-out-side'), nx, ny);
+            const gain = (((parseFloat(s2.snr) - parseFloat(s1.snr)) / Math.max(parseFloat(s1.snr), 0.1)) * 100).toFixed(1);
+            document.getElementById('roi-readout').innerHTML =
+              `Original [Mean: ${{s1.mean}}, SD: ${{s1.sd}}, SNR: ${{s1.snr}}]  ➔  <span style='color:#34d399'>RAD4AI [Mean: ${{s2.mean}}, SD: ${{s2.sd}}, SNR: ${{s2.snr}} | SNR Gain: ${{gain > 0 ? '+'+gain : gain}}% ]</span>`;
+          }} catch(err) {{}}
+        }});
+      }});
       document.querySelectorAll('.wheel-zone').forEach(z => z.addEventListener('wheel', e => {{
         e.preventDefault();
         const delta = e.deltaY > 0 ? 1 : -1;
@@ -649,6 +762,7 @@ def tools_page(message: str = "", _: str = Depends(require_admin)):
         "AI_SWIFT_DENOISE": "Active & Approved: 2.5D Multi-Slice RAD4AI NAFNet v2.0 with Auto-Sequence Intelligence.",
         "RAD4AI_SPINE_PRO": "Active & Approved: 2.5D High-Clarity Spine & Ortho Pro mode with Ultra-Smooth marrow/muscle denoise, micro-edge crisping, and anti-burnout coil shading correction.",
         "RAD4AI_SR_15T": "Active & Approved: Sub-pixel edge synthesis + anti-staircasing + 2.5D Rician suppression for a 1.5T high-field matrix look.",
+        "RAD4AI_GE_AW": "Active & Approved: GE AW Workstation look with AIR Recon DL denoise, PURE/SCIC coil illumination equalization, and zero-floor background clamping.",
         "BASE_MILD": "Ready for baseline comparison reference.",
         "DENOISE_MEDIUM": "Ready for noisy scans; inspect fine anatomical edges.",
         "EDGE_DENOISE_MILD": "Reduces Rician noise while protecting anatomical edges.",

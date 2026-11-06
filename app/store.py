@@ -260,6 +260,7 @@ def initialize() -> None:
             ("AI_SWIFT_DENOISE", "RAD4AI Denoise (2.5D NAFNet v2.0)", 1, 1, "2.5D Multi-Slice AI Denoise + Auto-Sequence Intelligence"),
             ("RAD4AI_SPINE_PRO", "RAD4AI Spine & Ortho Pro (High-Clarity)", 1, 1, "2.5D Ultra-Smooth Denoise + Disc/Edge Crisping + Coil Equalization"),
             ("RAD4AI_SR_15T", "RAD4AI Super-Resolution (1.5T Matrix Look)", 1, 1, "Sub-Pixel Detail Synthesis + Anti-Staircasing + 2.5D Rician Suppression"),
+            ("RAD4AI_GE_AW", "RAD4AI GE-AW Workstation (AIR Recon + PURE/SCIC)", 1, 1, "GE AW Workstation Look: AIR Recon DL + PURE/SCIC Coil Equalization + Zero-Floor Background"),
             ("BASE_MILD", "Conservative Baseline", 1, 1, "Safe baseline reference"),
             ("DENOISE_MEDIUM", "Medium Denoise", 1, 1, "Standard Rician noise reduction"),
             ("EDGE_DENOISE_MILD", "Edge-Preserving Denoise", 1, 1, "Noise reduction with edge protection"),

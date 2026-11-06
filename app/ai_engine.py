@@ -75,7 +75,10 @@ class MRIAIEngine:
         seq_type = self.detect_sequence_type(description)
 
         # Calibrated clinical strength mapping (0.5=MILD, 0.8=MEDIUM, 1.0=STRONG)
-        if mode == "sr_15t":
+        if mode == "ge_aw":
+            # GE AW Workstation (AIR Recon DL + PURE/SCIC + Clarify S-Curve)
+            flat_denoise = float(np.clip(0.54 + 0.14 * strength, 0.60, 0.68))
+        elif mode == "sr_15t":
             # Super-Resolution 1.5T Detail Reconstruction Mode (Anti-staircasing + Sub-pixel edge synthesis)
             flat_denoise = float(np.clip(0.52 + 0.14 * strength, 0.58, 0.68))
         elif mode == "spine_pro":
@@ -86,8 +89,8 @@ class MRIAIEngine:
 
         # Auto-Sequence Intelligence adjustments
         edge_protect_factor = 0.96
-        bg_suppress_factor = 0.35
-        crisp_boost = 0.03 if mode in ("spine_pro", "sr_15t") else 0.01
+        bg_suppress_factor = 0.42 if mode == "ge_aw" else 0.35
+        crisp_boost = 0.03 if mode in ("spine_pro", "sr_15t", "ge_aw") else 0.01
         if seq_type == "ANGIO_MRV":
             # Protect fine vessels maximally & clean dark background
             edge_protect_factor = 0.98
@@ -122,14 +125,15 @@ class MRIAIEngine:
             norm = np.ascontiguousarray(np.clip((src - low) / span, 0.0, 1.0), dtype=np.float32)
             raw_norm_slices.append(norm)
 
-            if mode in ("spine_pro", "sr_15t"):
-                # Anti-Burnout Surface Coil Shading Equalization (applied strictly to non-edge bright fat zones)
+            if mode in ("spine_pro", "sr_15t", "ge_aw"):
+                # Anti-Burnout Surface Coil Shading Equalization (GE PURE / SCIC homomorphic curve)
                 illum = gaussian_filter(norm, sigma=max(14.0, min(norm.shape) / 8.0))
                 fg = norm > 0.10
                 if np.any(fg):
                     ref_illum = float(np.median(illum[fg]))
                     coil_gain = np.clip(ref_illum / np.maximum(illum, ref_illum * 0.55), 0.92, 1.06)
-                    norm_work = np.clip(norm * (0.82 + 0.18 * coil_gain), 0.0, 1.0).astype(np.float32)
+                    gain_weight = 0.20 if mode == "ge_aw" else 0.18
+                    norm_work = np.clip(norm * ((1.0 - gain_weight) + gain_weight * coil_gain), 0.0, 1.0).astype(np.float32)
                 else:
                     norm_work = norm
             else:
@@ -139,7 +143,7 @@ class MRIAIEngine:
             inp = norm_work[np.newaxis, np.newaxis, :, :]
             pred = self.session.run(None, {input_name: inp})[0]
             onnx_out = np.clip(pred[0, 0].astype(np.float32), 0.0, 1.0)
-            smooth_sigma = 0.92 if mode == "spine_pro" else 0.82 if mode == "sr_15t" else 0.85
+            smooth_sigma = 0.92 if mode == "spine_pro" else 0.85 if mode == "ge_aw" else 0.82 if mode == "sr_15t" else 0.85
             onnx_slices.append(gaussian_filter(onnx_out, sigma=smooth_sigma))
 
         results = []

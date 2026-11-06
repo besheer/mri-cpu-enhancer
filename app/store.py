@@ -257,8 +257,9 @@ def initialize() -> None:
         ])
         db.execute("UPDATE comparison_jobs SET status='queued',error='Recovered after restart' WHERE status='processing'")
         tools = [
-            ("AI_SWIFT_DENOISE", "RAD4AI Denoise (NAFNet v2.0)", 1, 1, "Clinical 0.3T AI Denoise & Edge Protection"),
-            ("RAD4AI_SPINE_PRO", "RAD4AI Spine & Ortho Pro (High-Clarity)", 1, 1, "Ultra-Smooth Denoise + Disc/Edge Crisping + Anti-Burnout Coil Equalization"),
+            ("AI_SWIFT_DENOISE", "RAD4AI Denoise (2.5D NAFNet v2.0)", 1, 1, "2.5D Multi-Slice AI Denoise + Auto-Sequence Intelligence"),
+            ("RAD4AI_SPINE_PRO", "RAD4AI Spine & Ortho Pro (High-Clarity)", 1, 1, "2.5D Ultra-Smooth Denoise + Disc/Edge Crisping + Coil Equalization"),
+            ("RAD4AI_SR_15T", "RAD4AI Super-Resolution (1.5T Matrix Look)", 1, 1, "Sub-Pixel Detail Synthesis + Anti-Staircasing + 2.5D Rician Suppression"),
             ("BASE_MILD", "Conservative Baseline", 1, 1, "Safe baseline reference"),
             ("DENOISE_MEDIUM", "Medium Denoise", 1, 1, "Standard Rician noise reduction"),
             ("EDGE_DENOISE_MILD", "Edge-Preserving Denoise", 1, 1, "Noise reduction with edge protection"),

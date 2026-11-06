@@ -8,8 +8,9 @@ from scipy.ndimage import gaussian_filter, sobel
 from app.enhancer import conservative_baseline
 
 PROFILE_INFO = {
-    "AI_SWIFT_DENOISE": {"label": "RAD4AI Denoise (NAFNet v2.0)", "guidance": "Deep learning residual denoising with anisotropic edge preservation.", "min_slices": 1, "research_only": False},
-    "RAD4AI_SPINE_PRO": {"label": "RAD4AI Spine & Ortho Pro (High-Clarity)", "guidance": "Ultra-smooth marrow/muscle denoising + micro-edge disc crisping + anti-burnout coil shading correction.", "min_slices": 1, "research_only": False},
+    "AI_SWIFT_DENOISE": {"label": "RAD4AI Denoise (2.5D NAFNet v2.0)", "guidance": "2.5D multi-slice deep learning denoising with auto-sequence intelligence.", "min_slices": 1, "research_only": False},
+    "RAD4AI_SPINE_PRO": {"label": "RAD4AI Spine & Ortho Pro (High-Clarity)", "guidance": "2.5D ultra-smooth marrow/muscle denoise + micro-edge disc crisping + coil shading equalization.", "min_slices": 1, "research_only": False},
+    "RAD4AI_SR_15T": {"label": "RAD4AI Super-Resolution (1.5T Matrix Look)", "guidance": "Sub-pixel edge reconstruction + anti-staircasing + 2.5D Rician suppression for high-field clarity.", "min_slices": 1, "research_only": False},
     "BASE_MILD": {"label": "Conservative Baseline", "guidance": "Safe reference filter suitable for initial baseline comparison.", "min_slices": 1, "research_only": False},
     "DENOISE_MEDIUM": {"label": "Medium Denoise", "guidance": "For noticeably noisy scans; review fine anatomical borders.", "min_slices": 1, "research_only": False},
     "EDGE_DENOISE_MILD": {"label": "Edge-Preserving Denoise", "guidance": "Conservative noise reduction with curvature anisotropic edge protection.", "min_slices": 1, "research_only": False},
@@ -50,6 +51,7 @@ def validate_selection(profile: str, description: str, instances: int, acknowled
 PREFIXES = {
     "AI_SWIFT_DENOISE": "ENHANC-RAD4AI-",
     "RAD4AI_SPINE_PRO": "ENHANC-RAD4AI-PRO-",
+    "RAD4AI_SR_15T": "ENHANC-RAD4AI-SR-",
     "BASE_MILD": "ENHANC-BASE-",
     "DENOISE_MEDIUM": "ENHANC-DENOISE-",
     "EDGE_DENOISE_MILD": "ENHANC-EDGE-",
@@ -108,7 +110,8 @@ def _edge_denoise(volume: np.ndarray, spacing: tuple[float, float, float], stren
 
 
 def process_volume(volume: np.ndarray, profile: str, strength: str = "MEDIUM",
-                   spacing: tuple[float, float, float] = (1.0, 1.0, 1.0)) -> tuple[np.ndarray, dict[str, float | str]]:
+                   spacing: tuple[float, float, float] = (1.0, 1.0, 1.0),
+                   description: str = "") -> tuple[np.ndarray, dict[str, float | str]]:
     if profile not in PROFILES:
         raise ValueError("Unknown processing profile")
     if strength not in STRENGTHS:
@@ -117,11 +120,13 @@ def process_volume(volume: np.ndarray, profile: str, strength: str = "MEDIUM",
         raise ValueError("A 3D DICOM series is required")
     started = time.perf_counter()
     source = volume
-    if profile in {"AI_SWIFT_DENOISE", "RAD4AI_SPINE_PRO"}:
+    seq_detected = "GENERAL_MR"
+    if profile in {"AI_SWIFT_DENOISE", "RAD4AI_SPINE_PRO", "RAD4AI_SR_15T"}:
         from app.ai_engine import ai_engine
         strength_val = {"MILD": 0.5, "MEDIUM": 0.8, "STRONG": 1.0}[strength]
-        mode = "spine_pro" if profile == "RAD4AI_SPINE_PRO" else "standard"
-        output = ai_engine.enhance_volume(source, strength=strength_val, mode=mode)
+        mode = "spine_pro" if profile == "RAD4AI_SPINE_PRO" else "sr_15t" if profile == "RAD4AI_SR_15T" else "standard"
+        seq_detected = ai_engine.detect_sequence_type(description)
+        output = ai_engine.enhance_volume(source, strength=strength_val, mode=mode, description=description)
     elif profile == "BASE_MILD":
         output = np.stack([conservative_baseline(x) for x in source])
     elif profile == "DENOISE_MEDIUM":
@@ -162,6 +167,8 @@ def process_volume(volume: np.ndarray, profile: str, strength: str = "MEDIUM",
     edge_reference = max(float(np.mean(src_gradient[edge_mask])), 1e-6)
     metrics = {
         "strength": strength,
+        "sequence_mode": seq_detected,
+        "context_mode": "2.5D Multi-Slice" if volume.shape[0] >= 3 else "2D Single-Slice",
         "seconds": round(time.perf_counter() - started, 3),
         "normalized_mae": round(float(np.mean(np.abs(dst - src))) / span, 5),
         "noise_before": round(src_noise, 3),

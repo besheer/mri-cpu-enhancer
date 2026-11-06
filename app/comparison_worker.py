@@ -126,7 +126,7 @@ class ComparisonWorker:
             pixel_spacing = first.get("PixelSpacing", [1.0, 1.0])
             slice_spacing = float(first.get("SpacingBetweenSlices", first.get("SliceThickness", 1.0)))
             spacing = (float(pixel_spacing[1]), float(pixel_spacing[0]), abs(slice_spacing))
-            processed, metrics = process_volume(volume, profile, strength, spacing)
+            processed, metrics = process_volume(volume, profile, strength, spacing, description=description)
             output_uid = generate_uid()
             output_description = derived_series_description(description, f"{PREFIXES[profile]}{strength}-")
             output_series_id = ""

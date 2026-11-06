@@ -55,6 +55,10 @@ def conservative_baseline(image: np.ndarray) -> np.ndarray:
 
 def derived_series_description(original: str, prefix: str = DEFAULT_PREFIX) -> str:
     orig = original.strip() or 'MR SERIES'
+    for old_tag in ('[RAD4AI-GE-AW]', '[RAD4AI-1.5T]', '[RAD4AI-PRO]', '[RAD4AI]', '[ENHANCED]', '[AI-SWIFT]'):
+        orig = orig.replace(old_tag, '').strip()
+    if not orig.upper().startswith('ENH'):
+        orig = f"ENH {orig}"
     if 'GEAW' in prefix:
         tag = '[RAD4AI-GE-AW]'
     elif 'SR' in prefix:

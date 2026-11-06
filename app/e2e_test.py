@@ -84,7 +84,7 @@ def main():
     receiver_ip = wait_for_receiver()
     cleanup_e2e()
     with connect() as db:
-        cur = db.execute("INSERT INTO centers(name,slug,source_ip,source_aet,return_ip,return_aet,return_port,network_mode,return_policy,last_echo_status,auto_enhance_enabled,auto_profile,auto_strength) VALUES(?,?,?,?,?,?,11112,'VPN','AUTO_PASS','PASS',1,'EDGE_DENOISE_MILD','MILD')",
+        cur = db.execute("INSERT INTO centers(name,slug,source_ip,source_aet,return_ip,return_aet,return_port,network_mode,return_policy,last_echo_status,auto_enhance_enabled,auto_profile,auto_strength) VALUES(?,?,?,?,?,?,11112,'VPN','AUTO_PASS','PASS',1,'RAD4AI_GE_AW','MEDIUM')",
                          ("E2E Synthetic", slugify("E2E Synthetic"), enhancer_ip, SOURCE_AET, receiver_ip, RETURN_AET))
         center_id = cur.lastrowid
     study_uid, series_uid = generate_uid(), generate_uid()
@@ -126,10 +126,10 @@ def main():
     files = list(OUT.glob("*.dcm"))
     import pydicom
     result = pydicom.dcmread(files[0], stop_before_pixels=True)
-    assert str(result.SeriesDescription).startswith("ENHANC-"), result.SeriesDescription
+    assert str(result.SeriesDescription).startswith("ENH"), result.SeriesDescription
     print("RETURNED_INSTANCES=3")
     print("DERIVED_SERIES=" + str(result.SeriesDescription))
-    audit("E2E_RESULT", "system", "pipeline", "PASS; profile=EDGE_DENOISE_MILD; returned=3")
+    audit("E2E_RESULT", "system", "pipeline", f"PASS; profile=RAD4AI_GE_AW; desc={result.SeriesDescription}; returned=3")
     cleanup_e2e()
     print("E2E_RESULT=PASS")
 

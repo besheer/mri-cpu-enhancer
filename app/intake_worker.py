@@ -56,11 +56,14 @@ class IntakeWorker:
                 sid = series["ID"]
                 tags = series.get("MainDicomTags", {})
                 description = str(tags.get("SeriesDescription", ""))
-                # Synthetic Lab studies are managed in their own benchmark registry and
-                # must never enter branch intake or automatic-return workflows.
+                # Synthetic Lab studies and already-enhanced series are managed in their own registry
+                # and must never enter branch intake or automatic-return workflows.
+                u_desc = description.upper()
                 if (tags.get("Modality") != "MR"
-                        or description.upper().startswith("ENHANC")
-                        or description.upper().startswith("SYNTH-")):
+                        or u_desc.startswith("ENH")
+                        or "[RAD4AI" in u_desc
+                        or "[ENHANCED]" in u_desc
+                        or u_desc.startswith("SYNTH-")):
                     continue
                 instances = series.get("Instances", [])
                 if not instances:

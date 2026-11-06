@@ -37,7 +37,7 @@ ORTHANC_ID = re.compile(r"^[0-9a-f]{8}(?:-[0-9a-f]{8}){4}$")
 
 def is_derived_series(description: str) -> bool:
     u = description.upper()
-    return u.startswith("ENHANC") or "[AI-SWIFT]" in u or "[RAD4AI]" in u or "[RAD4AI-PRO]" in u or "[RAD4AI-1.5T]" in u or "[RAD4AI-GE-AW]" in u or "[ENHANCED]" in u
+    return u.startswith("ENH") or "[AI-SWIFT]" in u or "[RAD4AI]" in u or "[RAD4AI-PRO]" in u or "[RAD4AI-1.5T]" in u or "[RAD4AI-GE-AW]" in u or "[ENHANCED]" in u
 
 
 def client() -> httpx.Client:

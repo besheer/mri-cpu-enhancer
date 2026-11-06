@@ -93,7 +93,8 @@ class ComparisonWorker:
             info.raise_for_status()
             tags = info.json().get("MainDicomTags", {})
             description = str(tags.get("SeriesDescription", "MR SERIES"))
-            if tags.get("Modality") != "MR" or description.upper().startswith("ENHANC"):
+            u_desc = description.upper()
+            if tags.get("Modality") != "MR" or u_desc.startswith("ENH") or "[RAD4AI" in u_desc:
                 raise ValueError("Only original MR series can be processed")
             center = None
             instance_ids = info.json().get("Instances", [])

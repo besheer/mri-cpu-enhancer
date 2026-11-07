@@ -242,7 +242,13 @@ def studies(message: str = "", error: str = "", job_status: str = "", profile_fi
                             f"<div class='series-item derived-item'>"
                             f"<div><span class='snum-badge derived'>S:{esc(s_num)}</span> <b>{esc(disp_desc)}</b> "
                             f"<span class='muted'>({inst_count} slices)</span></div>"
-                            f"<div><span class='badge ok'>{badge_type}</span></div></div>"
+                            f"<div style='display:flex;align-items:center;gap:8px'>"
+                            f"<span class='badge ok'>{badge_type}</span>"
+                            f"<form method='post' action='/admin/series/{esc(series_id)}/send-to-ge' style='margin:0' onsubmit=\"return confirm('إرسال هذه السلسلة المحسنة فوراً إلى جهاز GE Workstation (192.168.0.206:4006)؟')\">"
+                            f"<button class='btn emerald' type='submit' style='padding:5px 12px;font-size:12px;font-weight:700;display:inline-flex;align-items:center;gap:4px'>📤 Send to GE</button></form>"
+                            f"<form method='post' action='/admin/series/{esc(series_id)}/delete' style='margin:0' onsubmit=\"return confirm('مسح هذه السلسلة المحسنة نهائياً؟')\">"
+                            f"<button class='btn red' style='padding:5px 10px;font-size:12px' title='Delete Series'>🗑️</button></form>"
+                            f"</div></div>"
                         )
                     else:
                         if job and job["status"] in {"queued", "processing"}:
@@ -445,7 +451,7 @@ document.getElementById('bulk-enqueue').addEventListener('click',async()=>{const
 
 
 @router.get("/jobs/{job_id}/compare", response_class=HTMLResponse)
-def interactive_compare(job_id: int, _: str = Depends(require_admin)):
+def interactive_compare(job_id: int, message: str = "", error: str = "", _: str = Depends(require_admin)):
     job = get_comparison_job(job_id)
     if job is None or job["status"] != "ready" or not job["output_series_id"]:
         raise HTTPException(404, "Comparison job is not ready or does not exist")
@@ -485,10 +491,15 @@ def interactive_compare(job_id: int, _: str = Depends(require_admin)):
 
     page = f"""
     <div class='study-toolbar' style='justify-content:space-between'>
-      <div class='actions'>
+      <div class='actions' style='display:flex;align-items:center;gap:8px;flex-wrap:wrap'>
         <a class='btn gray' href='/admin/studies'>← Back to Studies</a>
         {ohif_btn}
         <button type='button' class='btn ai-btn' onclick='exportComparisonSheet()'>📸 Download Clinical Comparison Report (PNG)</button>
+        <form method='post' action='/admin/jobs/{job_id}/send-to-ge' style='margin:0' onsubmit="return confirm('إرسال هذه السلسلة المحسّنة الآن إلى جهاز GE Workstation (192.168.0.206)؟\n\nSend this enhanced series directly to GE Workstation?')">
+          <button class='btn emerald' type='submit' style='display:inline-flex;align-items:center;gap:6px;font-weight:700;padding:8px 16px'>
+            📤 Send to GE Workstation (إرسال للجهاز)
+          </button>
+        </form>
       </div>
       <div class='kpi-pills'>
         <span class='kpi-pill'>Patient: <b>{esc(patient_name)}</b></span>
@@ -761,7 +772,7 @@ def interactive_compare(job_id: int, _: str = Depends(require_admin)):
       }}
     </script>
     """
-    return layout(f"Interactive Comparison #{job_id}", page)
+    return layout(f"Interactive Comparison #{job_id}", page, error or message, bool(error))
 
 
 @router.post("/series/{series_id}/ai-swift")
@@ -984,6 +995,39 @@ def approve(job_id: int, _: str = Depends(require_admin)):
     enqueue_return(job_id, center["id"], job["output_series_id"])
     audit("MANUAL_RETURN_QUEUED", "comparison_job", job_id, f"center={center['name']}", actor=_)
     return RedirectResponse("/admin/studies?message=" + quote("Approved and added to PACS Return Queue"), 303)
+
+
+@router.post("/jobs/{job_id}/send-to-ge")
+def send_job_to_ge(job_id: int, _: str = Depends(require_admin)):
+    job = get_comparison_job(job_id)
+    if not job or not job["output_series_id"]:
+        raise HTTPException(404, "Enhanced series not found for this job")
+    out_sid = job["output_series_id"]
+    try:
+        with client() as api:
+            r = api.post(f"/modalities/darelha/store", json=out_sid, timeout=120)
+            r.raise_for_status()
+        with connect() as db:
+            db.execute("UPDATE comparison_jobs SET approved=1, updated_at=CURRENT_TIMESTAMP WHERE id=?", (job_id,))
+            db.execute("INSERT OR REPLACE INTO return_jobs(comparison_job_id, center_id, output_series_id, status, error, updated_at) VALUES(?, 8, ?, 'sent', NULL, CURRENT_TIMESTAMP)", (job_id, out_sid))
+        audit("MANUAL_GE_SENT", "comparison_job", job_id, "destination=adw@192.168.0.206:4006", actor=_)
+        return RedirectResponse(f"/admin/jobs/{job_id}/compare?message=" + quote("✅ تم إرسال السلسلة المحسّنة بنجاح إلى جهاز GE Workstation (192.168.0.206:4006 / adw)!"), 303)
+    except Exception as exc:
+        return RedirectResponse(f"/admin/jobs/{job_id}/compare?error=" + quote(f"فشل الإرسال إلى جهاز GE: {exc}"), 303)
+
+
+@router.post("/series/{series_id}/send-to-ge")
+def send_series_to_ge(series_id: str, _: str = Depends(require_admin)):
+    if not ORTHANC_ID.match(series_id):
+        raise HTTPException(400, "Invalid series ID")
+    try:
+        with client() as api:
+            r = api.post(f"/modalities/darelha/store", json=series_id, timeout=120)
+            r.raise_for_status()
+        audit("MANUAL_SERIES_GE_SENT", "series", 0, f"series={series_id}&destination=adw@192.168.0.206:4006", actor=_)
+        return RedirectResponse("/admin/studies?message=" + quote("✅ تم إرسال السلسلة المحسّنة بنجاح إلى جهاز GE Workstation (192.168.0.206:4006 / adw)!"), 303)
+    except Exception as exc:
+        return RedirectResponse("/admin/studies?error=" + quote(f"فشل الإرسال إلى جهاز GE: {exc}"), 303)
 
 @router.post("/studies/{study_id}/delete")
 def delete_study(study_id: str, _: str = Depends(require_admin)):

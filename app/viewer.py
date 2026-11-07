@@ -250,7 +250,7 @@ def studies(message: str = "", error: str = "", job_status: str = "", profile_fi
                 derived_section = ""
                 if derived_cells:
                     derived_section = (
-                        f"<div style='margin-top:14px'><h4 style='margin:0 0 8px;color:#34d399'>✨ AI-Enhanced Series Ready for Comparison ({len(derived_cells)}):</h4>"
+                        f"""<div style='margin-top:14px'><div style='display:flex;justify-content:space-between;align-items:center;margin-bottom:8px'><h4 style='margin:0;color:#34d399'>? AI-Enhanced Series Ready for Comparison ({len(derived_cells)}):</h4><form method='post' action='/admin/studies/' + esc(study.get('ID','')) + '/delete-enhanced' style='margin:0' onsubmit="return confirm('??? ???? ??????? ???????? ???? ?????? ??? ?? ??????? ??? ????? ???????')"><button class='btn warn' style='padding:4px 10px;font-size:12px'>?? Clear Enhanced ({len(derived_cells)})</button></form></div>"""
                         f"<div class='series-grid'>{''.join(derived_cells)}</div></div>"
                     )
 
@@ -262,7 +262,7 @@ def studies(message: str = "", error: str = "", job_status: str = "", profile_fi
                     f"<span class='badge {'ok' if enhanced_count else 'warn'}' style='margin-top:5px'>{enhanced_count} enhanced series ready</span></div>"
                     f"<span class='chevron'></span></summary>"
                     f"<div class='study-body'><div class='study-toolbar'>"
-                    f"<button type='button' class='btn gray select-study'>☑️ Select All Original Series</button>{open_link}</div>"
+                    f"""<button type='button' class='btn gray select-study'>?? Select All Original Series</button>{open_link}<form method='post' action='/admin/studies/' + esc(study.get('ID','')) + '/delete' style='display:inline-block;margin-left:auto' onsubmit="return confirm('?? ?? ??? ????? ?? ??? ??? ?????? ??????? ????? ??????? ?????? ??????? ?? ????????')"><button class='btn red' style='padding:7px 14px'>??? Delete Study (??? ??????)</button></form></div>"""
                     f"<h4 style='margin:6px 0 8px;color:#93c5fd'>🩻 Original Raw Series:</h4>"
                     f"<div class='series-grid'>{''.join(raw_cells)}</div>"
                     f"{derived_section}</div></details>"
@@ -330,6 +330,25 @@ document.querySelectorAll('.select-study').forEach(b=>b.addEventListener('click'
 document.getElementById('clear-selection').addEventListener('click',()=>{checks().forEach(c=>c.checked=false);syncBar();});
 document.querySelectorAll('.enqueue-form').forEach(form=>form.addEventListener('submit',async event=>{event.preventDefault();const button=form.querySelector('button');button.disabled=true;try{const response=await fetch(form.action,{method:'POST',body:new FormData(form),headers:{'X-Requested-With':'fetch'}});const data=await response.json();if(!response.ok)throw new Error(data.detail||'Failed to enqueue job');button.textContent='Queued ✓';showToast(`Job #${data.job_id} added to processing queue`);setTimeout(()=>location.reload(),1800);}catch(error){showToast(error.message,true);}finally{button.disabled=false;}}));
 document.querySelectorAll('.ai-quick-form').forEach(form=>form.addEventListener('submit',async event=>{event.preventDefault();const button=form.querySelector('button');button.disabled=true;button.textContent='⏳ Enhancing...';try{const response=await fetch(form.action,{method:'POST',headers:{'X-Requested-With':'fetch'}});const data=await response.json();if(!response.ok)throw new Error(data.detail||'Failed to start RAD4AI');button.textContent='✓ Queued!';showToast(`⚡ RAD4AI enhancement started (Job #${data.job_id})...`);setTimeout(()=>location.reload(),2200);}catch(error){showToast(error.message,true);button.textContent='⚡ Instant RAD4AI Enhance';}finally{button.disabled=false;}}));
+document.getElementById('bulk-delete')?.addEventListener('click',async()=>{
+    const selected=checks();
+    if(!selected.length){showToast('Please select at least one series to delete', true); return;}
+    if(!confirm(`?? ?????: ?? ??? ????? ?? ??? ${selected.length} ????? ????? ??????? ?? ????????\\n\\nAre you sure you want to permanently delete ${selected.length} selected series?`))return;
+    const button=document.getElementById('bulk-delete'),data=new FormData();
+    selected.forEach(c=>data.append('series_ids',c.value));
+    button.disabled=true;statusBox.textContent=' Deleting...';
+    try{
+        const response=await fetch('/admin/series/delete-batch',{method:'POST',body:data,headers:{'X-Requested-With':'fetch'}});
+        const result=await response.json();
+        if(!response.ok)throw new Error(result.detail||'Failed to delete batch');
+        showToast(`Deleted ${result.count} series successfully`);
+        setTimeout(()=>location.reload(),1200);
+    }catch(error){
+        showToast(error.message,true);
+    }finally{
+        button.disabled=false;
+    }
+});
 document.getElementById('bulk-enqueue').addEventListener('click',async()=>{const selected=checks(),profiles=[...document.querySelectorAll("input[name='bulk-tool']:checked")];if(!selected.length)return;if(!profiles.length){showToast('Select at least one enhancer profile',true);return;}const button=document.getElementById('bulk-enqueue'),data=new FormData();selected.forEach(c=>data.append('series_ids',c.value));profiles.forEach(p=>data.append('profiles',p.value));data.append('strength',document.getElementById('bulk-strength').value);if(document.getElementById('bulk-ack').checked)data.append('acknowledged','on');button.disabled=true;statusBox.textContent=' Enqueuing...';try{const response=await fetch('/admin/series/enqueue-batch',{method:'POST',body:data,headers:{'X-Requested-With':'fetch'}});const result=await response.json();if(!response.ok)throw new Error(result.detail||'Failed to enqueue batch');selected.forEach(c=>{c.checked=false;c.disabled=true;});statusBox.textContent='';showToast(`Added ${result.count} jobs to the processing queue`);syncBar();setTimeout(()=>location.reload(),2000);}catch(error){statusBox.textContent='';showToast(error.message,true);}finally{button.disabled=false;}});
 </script>"""
     status_options = "".join(f"<option value='{value}' {'selected' if job_status == value else ''}>{label}</option>" for value, label in [("", "All Statuses"), ("queued", "Queued"), ("processing", "Processing"), ("ready", "Ready"), ("failed", "Failed")])
@@ -881,3 +900,118 @@ def approve(job_id: int, _: str = Depends(require_admin)):
     enqueue_return(job_id, center["id"], job["output_series_id"])
     audit("MANUAL_RETURN_QUEUED", "comparison_job", job_id, f"center={center['name']}", actor=_)
     return RedirectResponse("/admin/studies?message=" + quote("Approved and added to PACS Return Queue"), 303)
+
+@router.post("/studies/{study_id}/delete")
+def delete_study(study_id: str, _: str = Depends(require_admin)):
+    if not ORTHANC_ID.match(study_id):
+        raise HTTPException(400, "Invalid Orthanc study ID")
+    try:
+        series_ids = []
+        with client() as api:
+            study_resp = api.get(f"/studies/{study_id}")
+            if study_resp.status_code == 200:
+                series_ids = study_resp.json().get("Series", [])
+                api.delete(f"/studies/{study_id}").raise_for_status()
+        if series_ids:
+            with connect() as db:
+                for sid in series_ids:
+                    job_ids = [r[0] for r in db.execute("SELECT id FROM comparison_jobs WHERE source_series_id=? OR output_series_id=?", (sid, sid)).fetchall()]
+                    for jid in job_ids:
+                        db.execute("DELETE FROM return_jobs WHERE comparison_job_id=?", (jid,))
+                    db.execute("DELETE FROM comparison_jobs WHERE source_series_id=? OR output_series_id=?", (sid, sid))
+                    db.execute("DELETE FROM inbound_series WHERE series_id=?", (sid,))
+                    db.execute("DELETE FROM processed_series WHERE series_id=?", (sid,))
+        audit("STUDY_DELETED", "study", study_id, f"series={len(series_ids)}", actor=_)
+        return RedirectResponse("/admin/studies?message=" + quote("Study and all associated series deleted successfully"), 303)
+    except Exception as exc:
+        return RedirectResponse("/admin/studies?error=" + quote(f"Failed to delete study: {exc}"), 303)
+
+
+@router.post("/studies/{study_id}/delete-enhanced")
+def delete_enhanced_series(study_id: str, _: str = Depends(require_admin)):
+    if not ORTHANC_ID.match(study_id):
+        raise HTTPException(400, "Invalid Orthanc study ID")
+    try:
+        deleted_count = 0
+        with client() as api:
+            study_resp = api.get(f"/studies/{study_id}")
+            if study_resp.status_code != 200:
+                raise HTTPException(404, "Study not found")
+            for sid in study_resp.json().get("Series", []):
+                s_resp = api.get(f"/series/{sid}")
+                if s_resp.status_code == 200:
+                    desc = str(s_resp.json().get("MainDicomTags", {}).get("SeriesDescription", ""))
+                    if is_derived_series(desc):
+                        api.delete(f"/series/{sid}")
+                        deleted_count += 1
+                        with connect() as db:
+                            job_ids = [r[0] for r in db.execute("SELECT id FROM comparison_jobs WHERE output_series_id=?", (sid,)).fetchall()]
+                            for jid in job_ids:
+                                db.execute("DELETE FROM return_jobs WHERE comparison_job_id=?", (jid,))
+                            db.execute("DELETE FROM comparison_jobs WHERE output_series_id=?", (sid,))
+                            db.execute("DELETE FROM processed_series WHERE series_id=?", (sid,))
+        audit("ENHANCED_SERIES_DELETED", "study", study_id, f"count={deleted_count}", actor=_)
+        return RedirectResponse("/admin/studies?message=" + quote(f"Deleted {deleted_count} enhanced series"), 303)
+    except Exception as exc:
+        return RedirectResponse("/admin/studies?error=" + quote(f"Failed to delete enhanced series: {exc}"), 303)
+
+
+@router.post("/series/{series_id}/delete")
+def delete_series(series_id: str, _: str = Depends(require_admin)):
+    if not ORTHANC_ID.match(series_id):
+        raise HTTPException(400, "Invalid Orthanc series ID")
+    try:
+        with client() as api:
+            api.delete(f"/series/{series_id}").raise_for_status()
+        with connect() as db:
+            job_ids = [r[0] for r in db.execute("SELECT id FROM comparison_jobs WHERE source_series_id=? OR output_series_id=?", (series_id, series_id)).fetchall()]
+            for jid in job_ids:
+                db.execute("DELETE FROM return_jobs WHERE comparison_job_id=?", (jid,))
+            db.execute("DELETE FROM comparison_jobs WHERE source_series_id=? OR output_series_id=?", (series_id, series_id))
+            db.execute("DELETE FROM inbound_series WHERE series_id=?", (series_id,))
+            db.execute("DELETE FROM processed_series WHERE series_id=?", (series_id,))
+        audit("SERIES_DELETED", "series", series_id, actor=_)
+        return RedirectResponse("/admin/studies?message=" + quote("Series deleted successfully"), 303)
+    except Exception as exc:
+        return RedirectResponse("/admin/studies?error=" + quote(f"Failed to delete series: {exc}"), 303)
+
+
+@router.post("/series/delete-batch")
+async def delete_series_batch(request: Request, _: str = Depends(require_admin)):
+    form = await request.form()
+    series_ids = form.getlist("series_ids")
+    if not series_ids:
+        raise HTTPException(400, "No series selected")
+    deleted_count = 0
+    with client() as api:
+        for sid in series_ids:
+            if ORTHANC_ID.match(sid):
+                try:
+                    r = api.delete(f"/series/{sid}")
+                    if r.status_code == 200:
+                        deleted_count += 1
+                except Exception:
+                    pass
+    with connect() as db:
+        for sid in series_ids:
+            job_ids = [r[0] for r in db.execute("SELECT id FROM comparison_jobs WHERE source_series_id=? OR output_series_id=?", (sid, sid)).fetchall()]
+            for jid in job_ids:
+                db.execute("DELETE FROM return_jobs WHERE comparison_job_id=?", (jid,))
+            db.execute("DELETE FROM comparison_jobs WHERE source_series_id=? OR output_series_id=?", (sid, sid))
+            db.execute("DELETE FROM inbound_series WHERE series_id=?", (sid,))
+            db.execute("DELETE FROM processed_series WHERE series_id=?", (sid,))
+    audit("BATCH_SERIES_DELETED", "series_batch", str(deleted_count), actor=_)
+    return JSONResponse({"count": deleted_count})
+
+
+@router.post("/jobs/{job_id}/delete")
+def delete_job(job_id: int, _: str = Depends(require_admin)):
+    try:
+        with connect() as db:
+            db.execute("DELETE FROM return_jobs WHERE comparison_job_id=?", (job_id,))
+            db.execute("DELETE FROM comparison_jobs WHERE id=?", (job_id,))
+        audit("JOB_DELETED", "comparison_job", str(job_id), actor=_)
+        return RedirectResponse("/admin/studies?message=" + quote(f"Job #{job_id} deleted successfully"), 303)
+    except Exception as exc:
+        return RedirectResponse("/admin/studies?error=" + quote(f"Failed to delete job: {exc}"), 303)
+

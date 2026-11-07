@@ -150,6 +150,10 @@ body{margin:0;background:var(--bg);color:var(--text);font-family:'Segoe UI',Taho
 .gray{background:#e2e8f0;color:#1e293b}
 .gray:hover{background:#cbd5e1}
 .red{background:#fee2e2;color:var(--red)}
+.btn.red{background:#dc2626;color:#ffffff;border:1px solid #b91c1c}
+.btn.red:hover{background:#b91c1c}
+.btn.warn{background:#d97706;color:#ffffff;border:1px solid #b45309}
+.btn.warn:hover{background:#b45309}
 table{width:100%;border-collapse:collapse;font-size:13.5px}
 th,td{padding:12px 10px;text-align:left;border-bottom:1px solid var(--border);vertical-align:middle}
 html[dir='rtl'] th,html[dir='rtl'] td{text-align:right}

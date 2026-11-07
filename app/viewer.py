@@ -223,7 +223,21 @@ def studies(message: str = "", error: str = "", job_status: str = "", profile_fi
 
                     if enhanced:
                         disp_desc = description.replace("[AI-SWIFT]", "[RAD4AI]")
-                        badge_type = "✨ RAD4AI Enhanced" if any(k in description.upper() for k in ("[AI-SWIFT]", "AISWIFT", "[RAD4AI]", "RAD4AI")) else "✓ Enhanced (Derived)"
+                        up = description.upper()
+                        if "[RAD4AI-3THD]" in up or "3THD" in up:
+                            badge_type = "🔬 RAD4AI 3T-HD True Anatomy"
+                        elif "[RAD4AI-PRINT]" in up or "PRINT" in up:
+                            badge_type = "🖨️ RAD4AI Print-Master Ultra"
+                        elif "[RAD4AI-GE-AW]" in up or "GEAW" in up or "GE-AW" in up:
+                            badge_type = "🖥️ RAD4AI GE-AW Workstation"
+                        elif "[RAD4AI-1.5T]" in up or "-SR-" in up:
+                            badge_type = "⚡ RAD4AI 1.5T Super-Resolution"
+                        elif "[RAD4AI-PRO]" in up or "-PRO-" in up:
+                            badge_type = "🦴 RAD4AI Spine & Ortho Pro"
+                        elif any(k in up for k in ("[AI-SWIFT]", "AISWIFT", "[RAD4AI]", "RAD4AI")):
+                            badge_type = "✨ RAD4AI NAFNet Denoise"
+                        else:
+                            badge_type = "✓ Enhanced (Derived)"
                         derived_cells.append(
                             f"<div class='series-item derived-item'>"
                             f"<div><span class='snum-badge derived'>S:{esc(s_num)}</span> <b>{esc(disp_desc)}</b> "
@@ -444,6 +458,10 @@ def interactive_compare(job_id: int, _: str = Depends(require_admin)):
     study_uid = ""
     src_desc = "Original Raw"
     out_desc = "RAD4AI Enhanced"
+    from app.profiles import PROFILES, STRENGTHS
+    prof_key = job["profile"] if "profile" in job.keys() else ""
+    strength_val = job["strength"] if "strength" in job.keys() else "MEDIUM"
+    prof_name = PROFILES.get(prof_key, prof_key.replace("_", " "))
     src_snum = ""
     out_snum = ""
     patient_name = ""
@@ -474,6 +492,8 @@ def interactive_compare(job_id: int, _: str = Depends(require_admin)):
       </div>
       <div class='kpi-pills'>
         <span class='kpi-pill'>Patient: <b>{esc(patient_name)}</b></span>
+        <span class='kpi-pill' style='background:rgba(16,185,129,0.18);border:1px solid #10b981;color:#34d399'>🔮 Profile: <b>{esc(prof_name)}</b></span>
+        <span class='kpi-pill' style='background:rgba(56,189,248,0.18);border:1px solid #38bdf8;color:#38bdf8'>💪 Strength: <b>{esc(strength_val)}</b></span>
         <span class='kpi-pill'>🧬 Auto-Seq: <b>{esc(metrics.get('sequence_mode','AUTO'))}</b></span>
         <span class='kpi-pill'>🧊 Context: <b>{esc(metrics.get('context_mode','2.5D Multi-Slice'))}</b></span>
         <span class='kpi-pill'>⚡ Time: <b>{esc(metrics.get('seconds','—'))}s</b></span>
@@ -559,8 +579,8 @@ def interactive_compare(job_id: int, _: str = Depends(require_admin)):
           </div>
         </div>
         <div style='background:#020617;border:2px solid #059669;border-radius:12px;overflow:hidden;text-align:center;position:relative;box-shadow:0 0 25px rgba(16,185,129,.15)'>
-          <div style='position:absolute;top:10px;left:12px;z-index:10;background:rgba(6,78,59,.9);padding:5px 12px;border-radius:8px;border:1px solid #10b981;font-weight:700;font-size:13px;color:#34d399'>
-            ✨ RAD4AI Enhanced (v2.0) · <span>S:{esc(out_snum)}</span>
+          <div style='position:absolute;top:10px;left:12px;z-index:10;background:rgba(6,78,59,.92);padding:6px 14px;border-radius:8px;border:1px solid #10b981;font-weight:700;font-size:13px;color:#34d399;box-shadow:0 4px 12px rgba(0,0,0,0.6)'>
+            ✨ {esc(prof_name)} [{esc(strength_val)}] · <span>S:{esc(out_snum)}</span>
           </div>
           <div style='height:480px;display:flex;align-items:center;justify-content:center;overflow:hidden' class='wheel-zone'>
             <img id='img-out-side' class='mri-img' src='/admin/series/{out_sid}/slice/{mid_slice}.png' style='max-height:100%;max-width:100%;object-fit:contain;transition:transform .1s'>
@@ -571,7 +591,7 @@ def interactive_compare(job_id: int, _: str = Depends(require_admin)):
       <!-- Mode 2: Split Wipe A/B -->
       <div id='view-wipe' style='display:none;background:#020617;border:2px solid #3b82f6;border-radius:12px;padding:16px;text-align:center;color:#e2e8f0'>
         <div style='margin-bottom:10px'>
-          <label style='font-weight:700;font-size:13.5px'>↔️ Drag Split Wipe Slider (Left: RAD4AI Enhanced | Right: Original Raw):</label>
+          <label style='font-weight:700;font-size:13.5px'>↔️ Drag Split Wipe Slider (Left: {esc(prof_name)} [{esc(strength_val)}] | Right: Original Raw):</label>
           <input type='range' id='wipe-slider' min='0' max='100' value='50' style='width:320px;vertical-align:middle;accent-color:#10b981'>
         </div>
         <div style='position:relative;width:512px;height:512px;margin:0 auto;overflow:hidden;border-radius:10px;border:1px solid #334155' class='wheel-zone'>
@@ -728,7 +748,7 @@ def interactive_compare(job_id: int, _: str = Depends(require_admin)):
         ctx.font = 'bold 18px Segoe UI, Arial';
         ctx.fillText(`BEFORE: Original Raw (S:{esc(src_snum)} {esc(src_desc)})`, 44, 134);
         ctx.fillStyle = '#34d399';
-        ctx.fillText(`AFTER: RAD4AI 2.5D Enhanced (S:{esc(out_snum)} {esc(out_desc)})`, 732, 134);
+        ctx.fillText(`AFTER: {esc(prof_name)} [{esc(strength_val)}] (S:{esc(out_snum)} {esc(out_desc)})`, 732, 134);
 
         ctx.fillStyle = '#64748b';
         ctx.font = '13px Segoe UI, Arial';

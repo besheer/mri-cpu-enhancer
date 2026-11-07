@@ -250,19 +250,28 @@ def studies(message: str = "", error: str = "", job_status: str = "", profile_fi
                 derived_section = ""
                 if derived_cells:
                     derived_section = (
-                        f"""<div style='margin-top:14px'><div style='display:flex;justify-content:space-between;align-items:center;margin-bottom:8px'><h4 style='margin:0;color:#34d399'>? AI-Enhanced Series Ready for Comparison ({len(derived_cells)}):</h4><form method='post' action='/admin/studies/' + esc(study.get('ID','')) + '/delete-enhanced' style='margin:0' onsubmit="return confirm('??? ???? ??????? ???????? ???? ?????? ??? ?? ??????? ??? ????? ???????')"><button class='btn warn' style='padding:4px 10px;font-size:12px'>?? Clear Enhanced ({len(derived_cells)})</button></form></div>"""
+                        f"<div style='margin-top:14px'><div style='display:flex;justify-content:space-between;align-items:center;margin-bottom:8px'>"
+                        f"<h4 style='margin:0;color:#34d399'>✨ AI-Enhanced Series Ready for Comparison ({len(derived_cells)}):</h4>"
+                        f"<form method='post' action='/admin/studies/{esc(study.get('ID',''))}/delete-enhanced' style='margin:0' "
+                        f"onsubmit=\"return confirm('مسح جميع السلاسل المحسّنة لهذه الحالة فقط مع الإبقاء على الفحص الأصلي؟\n\nClear all enhanced series for this study?')\">"
+                        f"<button class='btn warn' style='padding:5px 12px;font-size:12px'>🧹 Clear Enhanced ({len(derived_cells)})</button></form></div>"
                         f"<div class='series-grid'>{''.join(derived_cells)}</div></div>"
                     )
 
                 rows.append(
                     f"<details class='study-card' data-study='{esc(study.get('ID',''))}' {open_attr}>"
-                    f"<summary>{thumb}<div><b style='font-size:16px'>{esc(patient.get('PatientName','')) or 'Unknown patient'}</b> — "
+                    f"<summary style='display:flex;align-items:center;gap:12px'>"
+                    f"<input class='study-check' type='checkbox' value='{esc(study.get('ID',''))}' title='Select Case' style='width:22px;height:22px;accent-color:#ef4444;cursor:pointer' onclick='event.stopPropagation()'>"
+                    f"{thumb}<div style='flex:1'><b style='font-size:16px'>{esc(patient.get('PatientName','')) or 'Unknown patient'}</b> — "
                     f"<span style='color:#60a5fa;font-weight:700'>{esc(main.get('StudyDescription',''))}</span><br>"
                     f"<span class='muted'>ID: {esc(patient.get('PatientID',''))} · Date: {esc(main.get('StudyDate',''))} · {len(raw_cells)} original series</span><br>"
                     f"<span class='badge {'ok' if enhanced_count else 'warn'}' style='margin-top:5px'>{enhanced_count} enhanced series ready</span></div>"
                     f"<span class='chevron'></span></summary>"
                     f"<div class='study-body'><div class='study-toolbar'>"
-                    f"""<button type='button' class='btn gray select-study'>?? Select All Original Series</button>{open_link}<form method='post' action='/admin/studies/' + esc(study.get('ID','')) + '/delete' style='display:inline-block;margin-left:auto' onsubmit="return confirm('?? ?? ??? ????? ?? ??? ??? ?????? ??????? ????? ??????? ?????? ??????? ?? ????????')"><button class='btn red' style='padding:7px 14px'>??? Delete Study (??? ??????)</button></form></div>"""
+                    f"<button type='button' class='btn gray select-study'>☑️ Select All Series in Case</button>{open_link}"
+                    f"<form method='post' action='/admin/studies/{esc(study.get('ID',''))}/delete' style='display:inline-block;margin-left:auto' "
+                    f"onsubmit=\"return confirm('⚠️ Are you sure you want to completely DELETE this study? This cannot be undone!\n\nهل أنت متأكد من مسح هذه الحالة بالكامل نهائياً من السيرفر؟')\">"
+                    f"<button class='btn red' style='padding:7px 14px'>🗑️ Delete Study (مسح الحالة)</button></form></div>"
                     f"<h4 style='margin:6px 0 8px;color:#93c5fd'>🩻 Original Raw Series:</h4>"
                     f"<div class='series-grid'>{''.join(raw_cells)}</div>"
                     f"{derived_section}</div></details>"
@@ -323,6 +332,52 @@ def studies(message: str = "", error: str = "", job_status: str = "", profile_fi
     script = """<script>
 const checks=()=>[...document.querySelectorAll('.series-check:checked')];
 const bar=document.getElementById('bulk-bar'),count=document.getElementById('selected-count'),statusBox=document.getElementById('bulk-status'),toast=document.getElementById('queue-toast');
+
+// Cases Checkbox & Bulk Delete Handler
+const studyChecks = () => [...document.querySelectorAll('.study-check:checked')];
+const allCasesCheck = document.getElementById('select-all-cases-check');
+const delSelectedCasesBtn = document.getElementById('delete-selected-cases-btn');
+const selectedCasesCount = document.getElementById('selected-cases-count');
+
+function syncCasesBar() {
+    const n = studyChecks().length;
+    if (selectedCasesCount) selectedCasesCount.textContent = n;
+    if (delSelectedCasesBtn) delSelectedCasesBtn.style.display = n > 0 ? 'inline-flex' : 'none';
+    if (allCasesCheck) {
+        const total = document.querySelectorAll('.study-check').length;
+        allCasesCheck.checked = total > 0 && n === total;
+    }
+}
+
+document.querySelectorAll('.study-check').forEach(c => c.addEventListener('change', syncCasesBar));
+
+allCasesCheck?.addEventListener('change', () => {
+    const checked = allCasesCheck.checked;
+    document.querySelectorAll('.study-check').forEach(c => c.checked = checked);
+    syncCasesBar();
+});
+
+delSelectedCasesBtn?.addEventListener('click', async () => {
+    const selected = studyChecks();
+    if (!selected.length) return;
+    if (!confirm(`⚠️ هل أنت متأكد من مسح ${selected.length} حالات محددة نهائياً بجميع صورها من السيرفر؟\n\nAre you sure you want to permanently delete ${selected.length} selected cases?`)) return;
+    delSelectedCasesBtn.disabled = true;
+    delSelectedCasesBtn.textContent = '⏳ Deleting...';
+    const data = new FormData();
+    selected.forEach(c => data.append('study_ids', c.value));
+    try {
+        const resp = await fetch('/admin/studies/delete-batch', { method: 'POST', body: data });
+        const res = await resp.json();
+        if (!resp.ok) throw new Error(res.detail || 'Failed');
+        showToast(`Deleted ${res.count} cases successfully`);
+        setTimeout(() => location.reload(), 1200);
+    } catch (e) {
+        showToast('Error: ' + e.message, true);
+        delSelectedCasesBtn.disabled = false;
+        syncCasesBar();
+    }
+});
+
 function showToast(message,isError=false){toast.textContent=message;toast.className='queue-toast '+(isError?'error':'ok');toast.hidden=false;setTimeout(()=>toast.hidden=true,4500);}
 function syncBar(){const n=checks().length;count.textContent=n;bar.hidden=!n;}
 document.querySelectorAll('.series-check').forEach(c=>c.addEventListener('change',syncBar));
@@ -333,7 +388,7 @@ document.querySelectorAll('.ai-quick-form').forEach(form=>form.addEventListener(
 document.getElementById('bulk-delete')?.addEventListener('click',async()=>{
     const selected=checks();
     if(!selected.length){showToast('Please select at least one series to delete', true); return;}
-    if(!confirm(`?? ?????: ?? ??? ????? ?? ??? ${selected.length} ????? ????? ??????? ?? ????????\\n\\nAre you sure you want to permanently delete ${selected.length} selected series?`))return;
+    if(!confirm(`⚠️ تحذير: هل أنت متأكد من مسح ?? ??? ${selected.length} ????? ????? ??????? ?? ????????\\n\\nAre you sure you want to permanently delete ${selected.length} selected series?`))return;
     const button=document.getElementById('bulk-delete'),data=new FormData();
     selected.forEach(c=>data.append('series_ids',c.value));
     button.disabled=true;statusBox.textContent=' Deleting...';
@@ -356,8 +411,17 @@ document.getElementById('bulk-enqueue').addEventListener('click',async()=>{const
     filters = f"<form method='get' class='actions queue-filters'><select name='job_status'>{status_options}</select><select name='profile_filter'>{profile_options}</select><button class='btn gray'>Filter</button><a class='btn gray' href='/admin/studies'>Reset</a></form>"
     body = (
         f"<section class='panel'><div class='panel-head'><h2>🩻 MRI Studies & RAD4AI Enhancement</h2>"
-        f"<div class='study-toolbar'><button class='btn gray' type='button' onclick=\"document.querySelectorAll('.study-card').forEach(x=>x.open=true)\">Expand All Studies</button>"
-        f"<button class='btn gray' type='button' onclick=\"document.querySelectorAll('.study-card').forEach(x=>x.open=false)\">Collapse All</button></div></div>"
+        f"<div class='study-toolbar' style='display:flex;align-items:center;gap:8px;flex-wrap:wrap'>"
+        f"<button class='btn gray' type='button' onclick=\"document.querySelectorAll('.study-card').forEach(x=>x.open=true)\">Expand All</button>"
+        f"<button class='btn gray' type='button' onclick=\"document.querySelectorAll('.study-card').forEach(x=>x.open=false)\">Collapse All</button>"
+        f"<label style='display:inline-flex;align-items:center;gap:6px;cursor:pointer;font-weight:700;margin-left:10px;padding:6px 12px;background:rgba(239,68,68,0.08);border:1px solid rgba(239,68,68,0.3);border-radius:8px'>"
+        f"<input type='checkbox' id='select-all-cases-check' style='width:18px;height:18px;accent-color:#ef4444'>"
+        f"<span>☑️ Select All Cases (تحديد كل الحالات)</span></label>"
+        f"<button type='button' class='btn red' id='delete-selected-cases-btn' style='display:none;padding:7px 14px'>🗑️ Delete Selected (<span id='selected-cases-count'>0</span>)</button>"
+        f"<form method='post' action='/admin/studies/delete-all' style='margin:0;margin-left:auto' "
+        f"onsubmit=\"return confirm('⚠️ تحذير شديد: هل أنت متأكد تماماً من مسح جميع الحالات والفحوصات بالكامل نهائياً من السيرفر؟\\n\\nAre you sure you want to completely DELETE ALL studies? This cannot be undone!')\">"
+        f"<button class='btn red' style='padding:7px 14px;background:#991b1b;border-color:#7f1d1d'>⚠️ Delete ALL Cases (مسح كل الحالات)</button></form>"
+        f"</div></div>"
         f"<p class='muted'>Original raw series keep their base number (e.g. <b>S:14</b>), while RAD4AI-enhanced series add 100 (e.g. <b>S:114 [RAD4AI]</b>). Click <b>⚡ Instant RAD4AI Enhance</b> for 1-click enhancement, or <b>🔍 Compare Before/After</b> to inspect results.</p>"
         f"{studies_html}</section>"
         f"<section class='panel'><div class='panel-head'><h2>⚡ Processing Queue & Clinical Quality Gate</h2>{filters}</div>"
@@ -1014,4 +1078,61 @@ def delete_job(job_id: int, _: str = Depends(require_admin)):
         return RedirectResponse("/admin/studies?message=" + quote(f"Job #{job_id} deleted successfully"), 303)
     except Exception as exc:
         return RedirectResponse("/admin/studies?error=" + quote(f"Failed to delete job: {exc}"), 303)
+
+@router.post("/studies/delete-batch")
+async def delete_studies_batch(request: Request, _: str = Depends(require_admin)):
+    form = await request.form()
+    study_ids = form.getlist("study_ids")
+    if not study_ids:
+        raise HTTPException(400, "No studies selected")
+    deleted_count = 0
+    all_series_ids = []
+    with client() as api:
+        for stid in study_ids:
+            if ORTHANC_ID.match(stid):
+                try:
+                    s_resp = api.get(f"/studies/{stid}")
+                    if s_resp.status_code == 200:
+                        all_series_ids.extend(s_resp.json().get("Series", []))
+                    r = api.delete(f"/studies/{stid}")
+                    if r.status_code == 200:
+                        deleted_count += 1
+                except Exception:
+                    pass
+    if all_series_ids:
+        with connect() as db:
+            for sid in all_series_ids:
+                job_ids = [r[0] for r in db.execute("SELECT id FROM comparison_jobs WHERE source_series_id=? OR output_series_id=?", (sid, sid)).fetchall()]
+                for jid in job_ids:
+                    db.execute("DELETE FROM return_jobs WHERE comparison_job_id=?", (jid,))
+                db.execute("DELETE FROM comparison_jobs WHERE source_series_id=? OR output_series_id=?", (sid, sid))
+                db.execute("DELETE FROM inbound_series WHERE series_id=?", (sid,))
+                db.execute("DELETE FROM processed_series WHERE series_id=?", (sid,))
+    audit("BATCH_STUDIES_DELETED", "studies_batch", str(deleted_count), actor=_)
+    return JSONResponse({"count": deleted_count})
+
+
+@router.post("/studies/delete-all")
+def delete_all_studies(_: str = Depends(require_admin)):
+    deleted_count = 0
+    all_series_ids = []
+    with client() as api:
+        resp = api.get("/studies")
+        if resp.status_code == 200:
+            for stid in resp.json():
+                try:
+                    s_resp = api.get(f"/studies/{stid}")
+                    if s_resp.status_code == 200:
+                        all_series_ids.extend(s_resp.json().get("Series", []))
+                    api.delete(f"/studies/{stid}")
+                    deleted_count += 1
+                except Exception:
+                    pass
+    with connect() as db:
+        db.execute("DELETE FROM return_jobs")
+        db.execute("DELETE FROM comparison_jobs")
+        db.execute("DELETE FROM inbound_series")
+        db.execute("DELETE FROM processed_series")
+    audit("ALL_STUDIES_DELETED", "studies", str(deleted_count), actor=_)
+    return RedirectResponse("/admin/studies?message=" + quote(f"All {deleted_count} studies deleted successfully"), 303)
 

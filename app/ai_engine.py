@@ -75,8 +75,8 @@ class MRIAIEngine:
         seq_type = self.detect_sequence_type(description)
 
         # Calibrated clinical strength mapping (0.5=MILD, 0.8=MEDIUM, 1.0=STRONG)
-        if mode == "print_master":
-            # RAD4AI Print-Master Ultra: Zero-Grain Velvet Tissue + Film S-Curve + Pure Zero-Floor Air
+        if mode in ("print_master", "3t_hd"):
+            # RAD4AI 3T-HD True Anatomy & Print-Master Ultra: Zero-Grain Velvet Tissue + Film S-Curve + Pure Zero-Floor Air
             flat_denoise = float(np.clip(0.85 + 0.10 * strength, 0.85, 0.96))
         elif mode == "ge_aw":
             # GE AW Workstation (AIR Recon DL + PURE/SCIC + Clarify S-Curve)
@@ -92,9 +92,9 @@ class MRIAIEngine:
 
         # Auto-Sequence Intelligence adjustments
         edge_protect_factor = 0.96
-        bg_suppress_factor = 0.99 if mode == "print_master" else 0.42 if mode == "ge_aw" else 0.35
-        crisp_boost = 0.08 if mode == "print_master" else 0.03 if mode in ("spine_pro", "sr_15t", "ge_aw") else 0.01
-        if mode == "print_master":
+        bg_suppress_factor = 0.99 if mode in ("print_master", "3t_hd") else 0.42 if mode == "ge_aw" else 0.35
+        crisp_boost = 0.08 if mode in ("print_master", "3t_hd") else 0.03 if mode in ("spine_pro", "sr_15t", "ge_aw") else 0.01
+        if mode in ("print_master", "3t_hd"):
             edge_protect_factor = 0.92
         if seq_type == "ANGIO_MRV":
             # Protect fine vessels maximally & clean dark background
@@ -130,14 +130,14 @@ class MRIAIEngine:
             norm = np.ascontiguousarray(np.clip((src - low) / span, 0.0, 1.0), dtype=np.float32)
             raw_norm_slices.append(norm)
 
-            if mode in ("spine_pro", "sr_15t", "ge_aw", "print_master"):
+            if mode in ("spine_pro", "sr_15t", "ge_aw", "print_master", "3t_hd"):
                 # Anti-Burnout Surface Coil Shading Equalization (GE PURE / SCIC homomorphic curve)
                 illum = gaussian_filter(norm, sigma=max(14.0, min(norm.shape) / 8.0))
                 fg = norm > 0.10
                 if np.any(fg):
                     ref_illum = float(np.median(illum[fg]))
                     coil_gain = np.clip(ref_illum / np.maximum(illum, ref_illum * 0.55), 0.92, 1.06)
-                    gain_weight = 0.25 if mode == "print_master" else 0.20 if mode == "ge_aw" else 0.18
+                    gain_weight = 0.25 if mode in ("print_master", "3t_hd") else 0.20 if mode == "ge_aw" else 0.18
                     norm_work = np.clip(norm * ((1.0 - gain_weight) + gain_weight * coil_gain), 0.0, 1.0).astype(np.float32)
                 else:
                     norm_work = norm
@@ -194,10 +194,24 @@ class MRIAIEngine:
                 crisp_gate = edge_mask * (1.0 - 0.45 * edge_mask) * bright_suppress
                 enhanced = np.clip(enhanced + crisp_boost * fine_detail * crisp_gate, 0.0, 1.0)
 
-            if mode == "print_master":
-                # Optical Film-Print S-Curve Contrast (Deep Blacks, Glowing Fluids/Bones for rich film print)
-                k = 3.6
-                x0 = 0.38
+            if mode in ("print_master", "3t_hd"):
+                # 1. Kramer-Bruckner Morphological Shock Filter (1px sharp anatomical boundaries without ringing)
+                from scipy.ndimage import maximum_filter, minimum_filter, laplace
+                dil = maximum_filter(enhanced, size=3)
+                ero = minimum_filter(enhanced, size=3)
+                lap = laplace(enhanced)
+                shock_target = np.where(lap < 0.0, dil, ero)
+                shock_weight = 0.30 * edge_mask * (1.0 - 0.25 * edge_mask)
+                enhanced = np.clip((1.0 - shock_weight) * enhanced + shock_weight * shock_target, 0.0, 1.0)
+
+                # 2. 3T Trabecular Micro-Texture Synthesis (cancellous bone marrow & soft-tissue micro-structure)
+                tex_high = norm_work - gaussian_filter(norm_work, sigma=1.2)
+                tissue_gate = np.clip((norm_work - 0.12) / 0.15, 0.0, 1.0) * np.clip((0.88 - norm_work) / 0.20, 0.0, 1.0)
+                enhanced = np.clip(enhanced + 0.35 * tex_high * tissue_gate, 0.0, 1.0)
+
+                # 3. Optical Film-Print S-Curve Contrast (Deep Blacks, Glowing Fluids/Bones for rich film print)
+                k = 3.8
+                x0 = 0.37
                 scurve = 1.0 / (1.0 + np.exp(-k * (enhanced - x0)))
                 s_min = 1.0 / (1.0 + np.exp(-k * (0.0 - x0)))
                 s_max = 1.0 / (1.0 + np.exp(-k * (1.0 - x0)))
@@ -205,7 +219,7 @@ class MRIAIEngine:
                 enhanced = 0.65 * scurve + 0.35 * enhanced
 
             # Rician Background Air Gate
-            bg_threshold = 0.10 if mode == "print_master" else 0.08
+            bg_threshold = 0.10 if mode in ("print_master", "3t_hd") else 0.08
             bg_mask = np.clip((bg_threshold - norm_work) / bg_threshold, 0.0, 1.0)
             enhanced = enhanced * (1.0 - bg_suppress_factor * bg_mask)
 

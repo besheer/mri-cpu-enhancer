@@ -46,7 +46,7 @@ def enhance_dicom_dataset(ds: pydicom.Dataset, profile: str = "RAD4AI_PRINT_MAST
     arr = orig_pixels.astype(np.float32)
     
     strength_val = 1.0 if strength == "STRONG" else 0.8 if strength == "MEDIUM" else 0.5
-    mode = "print_master" if profile == "RAD4AI_PRINT_MASTER" else "ge_aw" if profile == "RAD4AI_GE_AW" else "spine_pro" if profile == "RAD4AI_SPINE_PRO" else "standard"
+    mode = "3t_hd" if profile == "RAD4AI_3T_HD" else "print_master" if profile == "RAD4AI_PRINT_MASTER" else "ge_aw" if profile == "RAD4AI_GE_AW" else "spine_pro" if profile == "RAD4AI_SPINE_PRO" else "standard"
     
     if arr.ndim == 2:
         enhanced = ai_engine.enhance_slice(arr, strength=strength_val, mode=mode, upscale=upscale, description=str(ds.get("SeriesDescription", "")))
@@ -61,7 +61,7 @@ def enhance_dicom_dataset(ds: pydicom.Dataset, profile: str = "RAD4AI_PRINT_MAST
     out_ds.SeriesInstanceUID = generate_uid()
     out_ds.SOPInstanceUID = generate_uid()
     orig_desc = str(ds.get("SeriesDescription", "MR SERIES")).strip()
-    tag = "[RAD4AI-PRINT]" if profile == "RAD4AI_PRINT_MASTER" else "[RAD4AI-GEAW]" if profile == "RAD4AI_GE_AW" else "[RAD4AI-PRO]"
+    tag = "[RAD4AI-3THD]" if profile == "RAD4AI_3T_HD" else "[RAD4AI-PRINT]" if profile == "RAD4AI_PRINT_MASTER" else "[RAD4AI-GEAW]" if profile == "RAD4AI_GE_AW" else "[RAD4AI-PRO]"
     out_ds.SeriesDescription = f"ENH {orig_desc} {tag}"[:64]
     try:
         out_ds.SeriesNumber = int(ds.get("SeriesNumber", 0)) + 100
@@ -320,7 +320,7 @@ async def enhance_studio(file: UploadFile = File(...), profile: str = Form("RAD4
                     pass
             
         strength_val = 1.0 if strength == "STRONG" else 0.8 if strength == "MEDIUM" else 0.5
-        mode = "print_master" if profile == "RAD4AI_PRINT_MASTER" else "ge_aw" if profile == "RAD4AI_GE_AW" else "spine_pro" if profile == "RAD4AI_SPINE_PRO" else "standard"
+        mode = "3t_hd" if profile == "RAD4AI_3T_HD" else "print_master" if profile == "RAD4AI_PRINT_MASTER" else "ge_aw" if profile == "RAD4AI_GE_AW" else "spine_pro" if profile == "RAD4AI_SPINE_PRO" else "standard"
         
         if img_arr.ndim == 3 and img_arr.shape[0] in (3, 4):
             # RGB to Gray

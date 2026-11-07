@@ -55,11 +55,13 @@ def conservative_baseline(image: np.ndarray) -> np.ndarray:
 
 def derived_series_description(original: str, prefix: str = DEFAULT_PREFIX) -> str:
     orig = original.strip() or 'MR SERIES'
-    for old_tag in ('[RAD4AI-PRINT]', '[RAD4AI-GE-AW]', '[RAD4AI-1.5T]', '[RAD4AI-PRO]', '[RAD4AI]', '[ENHANCED]', '[AI-SWIFT]'):
+    for old_tag in ('[RAD4AI-3THD]', '[RAD4AI-PRINT]', '[RAD4AI-GE-AW]', '[RAD4AI-1.5T]', '[RAD4AI-PRO]', '[RAD4AI]', '[ENHANCED]', '[AI-SWIFT]'):
         orig = orig.replace(old_tag, '').strip()
     if not orig.upper().startswith('ENH'):
         orig = f"ENH {orig}"
-    if 'PRINT' in prefix:
+    if '3THD' in prefix:
+        tag = '[RAD4AI-3THD]'
+    elif 'PRINT' in prefix:
         tag = '[RAD4AI-PRINT]'
     elif 'GEAW' in prefix:
         tag = '[RAD4AI-GE-AW]'

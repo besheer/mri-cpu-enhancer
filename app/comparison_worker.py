@@ -69,7 +69,7 @@ class ComparisonWorker:
                     ).fetchone() is not None
                 if (not protocol_protected and center
                         and job["profile"] in auto_eligible_profile_names()
-                        and job["strength"] != "STRONG"
+                        
                         and center["return_policy"] == "AUTO_PASS" and qc_status == "PASS"
                         and center["last_echo_status"] == "PASS"):
                     enqueue_return(job["id"], center["id"], output_id)

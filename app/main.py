@@ -24,6 +24,7 @@ from app.system_health import snapshot
 from app.operations import router as operations_router
 from app.synthetic import router as synthetic_router
 from app.protocol_study import router as protocol_study_router
+from app.print_studio import router as print_studio_router
 
 worker = AutoProcessor()
 comparison_worker = ComparisonWorker()
@@ -56,6 +57,7 @@ app.include_router(training_router)
 app.include_router(operations_router)
 app.include_router(synthetic_router)
 app.include_router(protocol_study_router)
+app.include_router(print_studio_router)
 
 
 @app.get("/health")

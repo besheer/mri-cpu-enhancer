@@ -75,7 +75,10 @@ class MRIAIEngine:
         seq_type = self.detect_sequence_type(description)
 
         # Calibrated clinical strength mapping (0.5=MILD, 0.8=MEDIUM, 1.0=STRONG)
-        if mode == "ge_aw":
+        if mode == "print_master":
+            # RAD4AI Print-Master Ultra: Zero-Grain Velvet Tissue + Film S-Curve + Pure Zero-Floor Air
+            flat_denoise = float(np.clip(0.85 + 0.10 * strength, 0.85, 0.96))
+        elif mode == "ge_aw":
             # GE AW Workstation (AIR Recon DL + PURE/SCIC + Clarify S-Curve)
             flat_denoise = float(np.clip(0.54 + 0.14 * strength, 0.60, 0.68))
         elif mode == "sr_15t":
@@ -89,8 +92,10 @@ class MRIAIEngine:
 
         # Auto-Sequence Intelligence adjustments
         edge_protect_factor = 0.96
-        bg_suppress_factor = 0.42 if mode == "ge_aw" else 0.35
-        crisp_boost = 0.03 if mode in ("spine_pro", "sr_15t", "ge_aw") else 0.01
+        bg_suppress_factor = 0.99 if mode == "print_master" else 0.42 if mode == "ge_aw" else 0.35
+        crisp_boost = 0.08 if mode == "print_master" else 0.03 if mode in ("spine_pro", "sr_15t", "ge_aw") else 0.01
+        if mode == "print_master":
+            edge_protect_factor = 0.92
         if seq_type == "ANGIO_MRV":
             # Protect fine vessels maximally & clean dark background
             edge_protect_factor = 0.98
@@ -125,14 +130,14 @@ class MRIAIEngine:
             norm = np.ascontiguousarray(np.clip((src - low) / span, 0.0, 1.0), dtype=np.float32)
             raw_norm_slices.append(norm)
 
-            if mode in ("spine_pro", "sr_15t", "ge_aw"):
+            if mode in ("spine_pro", "sr_15t", "ge_aw", "print_master"):
                 # Anti-Burnout Surface Coil Shading Equalization (GE PURE / SCIC homomorphic curve)
                 illum = gaussian_filter(norm, sigma=max(14.0, min(norm.shape) / 8.0))
                 fg = norm > 0.10
                 if np.any(fg):
                     ref_illum = float(np.median(illum[fg]))
                     coil_gain = np.clip(ref_illum / np.maximum(illum, ref_illum * 0.55), 0.92, 1.06)
-                    gain_weight = 0.20 if mode == "ge_aw" else 0.18
+                    gain_weight = 0.25 if mode == "print_master" else 0.20 if mode == "ge_aw" else 0.18
                     norm_work = np.clip(norm * ((1.0 - gain_weight) + gain_weight * coil_gain), 0.0, 1.0).astype(np.float32)
                 else:
                     norm_work = norm
@@ -189,8 +194,19 @@ class MRIAIEngine:
                 crisp_gate = edge_mask * (1.0 - 0.45 * edge_mask) * bright_suppress
                 enhanced = np.clip(enhanced + crisp_boost * fine_detail * crisp_gate, 0.0, 1.0)
 
+            if mode == "print_master":
+                # Optical Film-Print S-Curve Contrast (Deep Blacks, Glowing Fluids/Bones for rich film print)
+                k = 3.6
+                x0 = 0.38
+                scurve = 1.0 / (1.0 + np.exp(-k * (enhanced - x0)))
+                s_min = 1.0 / (1.0 + np.exp(-k * (0.0 - x0)))
+                s_max = 1.0 / (1.0 + np.exp(-k * (1.0 - x0)))
+                scurve = np.clip((scurve - s_min) / (s_max - s_min), 0.0, 1.0)
+                enhanced = 0.65 * scurve + 0.35 * enhanced
+
             # Rician Background Air Gate
-            bg_mask = np.clip((0.08 - norm_work) / 0.08, 0.0, 1.0)
+            bg_threshold = 0.10 if mode == "print_master" else 0.08
+            bg_mask = np.clip((bg_threshold - norm_work) / bg_threshold, 0.0, 1.0)
             enhanced = enhanced * (1.0 - bg_suppress_factor * bg_mask)
 
             restored = enhanced * span + low
@@ -202,5 +218,17 @@ class MRIAIEngine:
                 results.append(restored.astype(slice_2d.dtype))
 
         return np.stack(results)
+
+
+    def enhance_slice(self, slice_2d: np.ndarray, strength: float = 1.0, mode: str = "print_master",
+                      upscale: bool = False, description: str = "") -> np.ndarray:
+        vol = slice_2d[np.newaxis, :, :]
+        enhanced_vol = self.enhance_volume(vol, strength=strength, mode=mode, description=description)
+        out = enhanced_vol[0]
+        if upscale and out.shape[0] <= 256 and out.shape[1] <= 256:
+            from scipy.ndimage import zoom
+            out = zoom(out, 2.0, order=3)
+        return out
+
 
 ai_engine = MRIAIEngine()

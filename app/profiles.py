@@ -8,6 +8,7 @@ from scipy.ndimage import gaussian_filter, sobel
 from app.enhancer import conservative_baseline
 
 PROFILE_INFO = {
+    "RAD4AI_PRINT_MASTER": {"label": "RAD4AI Print-Master Ultra (3T Print Look)", "guidance": "Zero-grain soft tissue + optical film-print S-curve contrast + 100% zero-floor background for stunning film/paper printouts.", "min_slices": 1, "research_only": False},
     "AI_SWIFT_DENOISE": {"label": "RAD4AI Denoise (2.5D NAFNet v2.0)", "guidance": "2.5D multi-slice deep learning denoising with auto-sequence intelligence.", "min_slices": 1, "research_only": False},
     "RAD4AI_SPINE_PRO": {"label": "RAD4AI Spine & Ortho Pro (High-Clarity)", "guidance": "2.5D ultra-smooth marrow/muscle denoise + micro-edge disc crisping + coil shading equalization.", "min_slices": 1, "research_only": False},
     "RAD4AI_SR_15T": {"label": "RAD4AI Super-Resolution (1.5T Matrix Look)", "guidance": "Sub-pixel edge reconstruction + anti-staircasing + 2.5D Rician suppression for high-field clarity.", "min_slices": 1, "research_only": False},
@@ -50,6 +51,7 @@ def validate_selection(profile: str, description: str, instances: int, acknowled
         raise ValueError("Strong enhancement level requires explicit research acknowledgment")
 
 PREFIXES = {
+    "RAD4AI_PRINT_MASTER": "ENHANC-PRINT-",
     "AI_SWIFT_DENOISE": "ENHANC-RAD4AI-",
     "RAD4AI_SPINE_PRO": "ENHANC-RAD4AI-PRO-",
     "RAD4AI_SR_15T": "ENHANC-RAD4AI-SR-",
@@ -123,10 +125,10 @@ def process_volume(volume: np.ndarray, profile: str, strength: str = "MEDIUM",
     started = time.perf_counter()
     source = volume
     seq_detected = "GENERAL_MR"
-    if profile in {"AI_SWIFT_DENOISE", "RAD4AI_SPINE_PRO", "RAD4AI_SR_15T", "RAD4AI_GE_AW"}:
+    if profile in {"AI_SWIFT_DENOISE", "RAD4AI_SPINE_PRO", "RAD4AI_SR_15T", "RAD4AI_GE_AW", "RAD4AI_PRINT_MASTER"}:
         from app.ai_engine import ai_engine
         strength_val = {"MILD": 0.5, "MEDIUM": 0.8, "STRONG": 1.0}[strength]
-        mode = "spine_pro" if profile == "RAD4AI_SPINE_PRO" else "sr_15t" if profile == "RAD4AI_SR_15T" else "ge_aw" if profile == "RAD4AI_GE_AW" else "standard"
+        mode = "print_master" if profile == "RAD4AI_PRINT_MASTER" else "spine_pro" if profile == "RAD4AI_SPINE_PRO" else "sr_15t" if profile == "RAD4AI_SR_15T" else "ge_aw" if profile == "RAD4AI_GE_AW" else "standard"
         seq_detected = ai_engine.detect_sequence_type(description)
         output = ai_engine.enhance_volume(source, strength=strength_val, mode=mode, description=description)
     elif profile == "BASE_MILD":

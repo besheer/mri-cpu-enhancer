@@ -20,7 +20,7 @@ from app.system_health import snapshot
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 security = HTTPBasic()
-AE_RE = re.compile(r"^[A-Z0-9_]{1,16}$")
+AE_RE = re.compile(r"^[A-Za-z0-9_]{1,16}$")
 PROFILES = {"BASE_ONLY": "BASE Only — Available", "N4_ONLY": "N4 Only — Coming Soon", "BASE_AND_N4": "BASE + N4 — Coming Soon"}
 NETWORK_MODES = {"UNKNOWN": "Unknown", "VPN": "VPN — Recommended", "PUBLIC_STATIC": "Public Static IP", "NAT_FORWARD": "Behind NAT + Port Forward", "AGENT_PULL": "Agent Pull", "NO_RETURN": "No Return"}
 RETURN_POLICIES = {"MANUAL": "Manual Review", "AUTO_PASS": "Auto Return if QC PASS", "DISABLED": "Return Disabled"}
@@ -49,7 +49,7 @@ def valid_ip(value: str, label: str, required: bool = True) -> str:
 
 
 def valid_aet(value: str, label: str) -> str:
-    value = value.strip().upper()
+    value = value.strip()
     if not AE_RE.fullmatch(value):
         raise ValueError(f"{label}: Use 1–16 characters (A-Z, 0-9, or _ only)")
     return value
@@ -85,7 +85,7 @@ def clean(data: dict[str, object]) -> dict[str, object]:
     auto_enabled = bool(data.get("auto_enhance_enabled"))
     if auto_enabled and auto_profile not in enabled_profile_names():
         raise ValueError("Selected enhancer is not enabled on the Tools page")
-    if auto_enabled and (auto_profile not in auto_eligible_profile_names() or auto_strength == "STRONG"):
+    if auto_enabled and (auto_profile not in auto_eligible_profile_names() ):
         raise ValueError("This enhancer/strength is for manual comparison only and is not allowed for Auto-Enhance")
     return {
         "name": name, "slug": slugify(name),
@@ -235,7 +235,7 @@ html[data-theme='dark'] .notice.error,html[data-theme='dark'] .error{background:
 
 def layout(title: str, body: str, message: str = "", error: bool = False) -> str:
     alert = f"<div class='notice {'error' if error else ''}'>{esc(message)}</div>" if message else ""
-    ohif_url = os.getenv("OHIF_PUBLIC_URL", "http://192.168.137.84:8042/ohif/viewer")
+    ohif_url = os.getenv("OHIF_PUBLIC_URL", "http://192.168.0.207:8042/ohif/viewer")
     shell = """<script>
 const root=document.documentElement;
 const savedTheme=localStorage.getItem('mri-theme')||'dark';
@@ -384,7 +384,7 @@ def add(name: str=Form(...), source_ip: str=Form(...), public_ip: str=Form(""), 
     try:
         d = values(name,source_ip,public_ip,public_ip_static,source_aet,return_ip,return_aet,return_port,pacs_internal_ip,device_manufacturer,device_model,field_strength,anatomy,sequences,notes,processing_profile,network_mode,return_policy,vpn_cidr,max_return_attempts,auto_enhance_enabled,auto_profile,auto_strength)
         with connect() as db: db.execute(f"INSERT INTO centers({','.join(d)}) VALUES({','.join('?' for _ in d)})", tuple(d.values()))
-        with connect() as db: db.execute("UPDATE pending_senders SET status='approved' WHERE source_ip=? AND source_aet=?", (d["source_ip"], d["source_aet"]))
+        with connect() as db: db.execute("UPDATE pending_senders SET status='approved' WHERE source_ip=? AND source_aet=? COLLATE NOCASE", (d["source_ip"], d["source_aet"]))
     except (ValueError, sqlite3.IntegrityError) as exc: return RedirectResponse("/admin?error="+quote(str(exc)),303)
     return RedirectResponse("/admin?message="+quote("Center and routing rule added successfully"),303)
 

@@ -83,7 +83,7 @@ class IntakeWorker:
                 if not center or not center["auto_enhance_enabled"]:
                     continue
                 profile, strength = center["auto_profile"], center["auto_strength"]
-                if profile not in PROFILES or profile not in auto_eligible_profile_names() or strength == "STRONG":
+                if profile not in PROFILES or profile not in auto_eligible_profile_names() :
                     with connect() as db:
                         db.execute("UPDATE inbound_series SET status='FAILED',error='Profile is not eligible for automatic processing',updated_at=CURRENT_TIMESTAMP WHERE series_id=?", (sid,))
                     continue

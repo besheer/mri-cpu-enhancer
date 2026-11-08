@@ -257,11 +257,12 @@ def initialize() -> None:
         ])
         db.execute("UPDATE comparison_jobs SET status='queued',error='Recovered after restart' WHERE status='processing'")
         tools = [
-            ("AI_SWIFT_DENOISE", "RAD4AI Denoise (2.5D NAFNet v2.0)", 1, 1, "2.5D Multi-Slice AI Denoise + Auto-Sequence Intelligence"),
-            ("RAD4AI_SPINE_PRO", "RAD4AI Spine & Ortho Pro (High-Clarity)", 1, 1, "2.5D Ultra-Smooth Denoise + Disc/Edge Crisping + Coil Equalization"),
-            ("RAD4AI_SR_15T", "RAD4AI Super-Resolution (1.5T Matrix Look)", 1, 1, "Sub-Pixel Detail Synthesis + Anti-Staircasing + 2.5D Rician Suppression"),
-            ("RAD4AI_3T_HD", "RAD4AI 3T-HD True Anatomy (Shock-Filter & Trabecular)", 1, 1, "Kramer-Bruckner shock filter (1px edges) + 3T trabecular bone micro-texture"),
-            ("RAD4AI_PRINT_MASTER", "RAD4AI Print-Master Ultra (3T Print Look)", 1, 1, "Zero-grain soft tissue + optical film-print S-curve contrast + 100% zero-floor background"),
+            ("RICIAN_NLM_VST", "RAD4AI Rician-VST + Non-Local Means (Physics Safe)", 1, 1, "Donoho Haar-MAD sigma + Unbiased Rician VST + Integral-Image NLM & Tangent Coherence"),
+            ("AI_SWIFT_DENOISE", "RAD4AI Denoise (2.5D NAFNet + Rician VST)", 1, 1, "2.5D Multi-Slice AI + Rician VST Denoise + Auto-Sequence Intelligence"),
+            ("RAD4AI_SPINE_PRO", "RAD4AI Spine & Ortho Pro (High-Clarity)", 1, 1, "2.5D Ultra-Smooth Rician Debiasing + Tangent Disc/Root Borders + Coil Equalization"),
+            ("RAD4AI_SR_15T", "RAD4AI Super-Resolution (1.5T Matrix Look)", 1, 1, "Sub-Pixel Detail Restoration + Anti-Staircasing + 2.5D Rician Suppression"),
+            ("RAD4AI_3T_HD", "RAD4AI 3T-HD True Anatomy (Anisotropic Tangent-Restore)", 1, 1, "Structure-Tensor Tangent Curve Restoration + Rician Debiasing (Zero Fake Grain)"),
+            ("RAD4AI_PRINT_MASTER", "RAD4AI Print-Master Ultra (Display / Film Print Only)", 1, 1, "Display/Print-only S-curve contrast + zero-grain velvet tissue + zero-floor background"),
             ("RAD4AI_GE_AW", "RAD4AI GE-AW Workstation (AIR Recon + PURE/SCIC)", 1, 1, "GE AW Workstation Look: AIR Recon DL + PURE/SCIC Coil Equalization + Zero-Floor Background"),
             ("BASE_MILD", "Conservative Baseline", 1, 1, "Safe baseline reference"),
             ("DENOISE_MEDIUM", "Medium Denoise", 1, 1, "Standard Rician noise reduction"),
@@ -279,8 +280,8 @@ def initialize() -> None:
         db.execute("UPDATE model_registry SET name='RAD4AI-NAFNet-03T-Clinical' WHERE name LIKE '%Swift%'")
         # Reference/display/unvalidated engines remain available for controlled
         # comparison but can never be selected by branch automation.
-        db.execute("UPDATE processing_tools SET auto_eligible=0 WHERE profile IN ('BASE_MILD','CLAHE_VIEW','MONAI_MODEL','DIPY_DWI')")
-        db.execute("UPDATE centers SET auto_enhance_enabled=0 WHERE auto_profile IN ('BASE_MILD','CLAHE_VIEW') OR auto_strength='STRONG'")
+        db.execute("UPDATE processing_tools SET auto_eligible=0 WHERE profile IN ('BASE_MILD','CLAHE_VIEW','RAD4AI_PRINT_MASTER','MONAI_MODEL','DIPY_DWI')")
+        db.execute("UPDATE centers SET auto_enhance_enabled=0 WHERE auto_profile IN ('BASE_MILD','CLAHE_VIEW','RAD4AI_PRINT_MASTER') OR auto_strength='STRONG'")
         # Protocol-acceleration experiments are comparison-only. This database
         # guard prevents a UI or worker mistake from placing them in Return Queue.
         db.execute("""

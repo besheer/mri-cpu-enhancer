@@ -46,7 +46,7 @@ def enhance_dicom_dataset(ds: pydicom.Dataset, profile: str = "RAD4AI_PRINT_MAST
     arr = orig_pixels.astype(np.float32)
     
     strength_val = 1.0 if strength == "STRONG" else 0.8 if strength == "MEDIUM" else 0.5
-    mode = "3t_hd" if profile == "RAD4AI_3T_HD" else "print_master" if profile == "RAD4AI_PRINT_MASTER" else "ge_aw" if profile == "RAD4AI_GE_AW" else "spine_pro" if profile == "RAD4AI_SPINE_PRO" else "standard"
+    mode = "rician_nlm" if profile == "RICIAN_NLM_VST" else "3t_hd" if profile == "RAD4AI_3T_HD" else "print_master" if profile == "RAD4AI_PRINT_MASTER" else "ge_aw" if profile == "RAD4AI_GE_AW" else "spine_pro" if profile == "RAD4AI_SPINE_PRO" else "standard"
     
     if arr.ndim == 2:
         enhanced = ai_engine.enhance_slice(arr, strength=strength_val, mode=mode, upscale=upscale, description=str(ds.get("SeriesDescription", "")))
@@ -61,7 +61,7 @@ def enhance_dicom_dataset(ds: pydicom.Dataset, profile: str = "RAD4AI_PRINT_MAST
     out_ds.SeriesInstanceUID = generate_uid()
     out_ds.SOPInstanceUID = generate_uid()
     orig_desc = str(ds.get("SeriesDescription", "MR SERIES")).strip()
-    tag = "[RAD4AI-3THD]" if profile == "RAD4AI_3T_HD" else "[RAD4AI-PRINT]" if profile == "RAD4AI_PRINT_MASTER" else "[RAD4AI-GEAW]" if profile == "RAD4AI_GE_AW" else "[RAD4AI-PRO]"
+    tag = "[RAD4AI-RNLM]" if profile == "RICIAN_NLM_VST" else "[RAD4AI-3THD]" if profile == "RAD4AI_3T_HD" else "[RAD4AI-PRINT]" if profile == "RAD4AI_PRINT_MASTER" else "[RAD4AI-GEAW]" if profile == "RAD4AI_GE_AW" else "[RAD4AI-PRO]"
     out_ds.SeriesDescription = f"ENH {orig_desc} {tag}"[:64]
     try:
         out_ds.SeriesNumber = int(ds.get("SeriesNumber", 0)) + 100
@@ -99,7 +99,7 @@ def enhance_dicom_dataset(ds: pydicom.Dataset, profile: str = "RAD4AI_PRINT_MAST
 @router.get("/admin/print-studio", response_class=HTMLResponse)
 def print_studio_page(_: str = Depends(require_admin)):
     profile_options = "".join(f"<option value='{k}' {'selected' if k=='RAD4AI_PRINT_MASTER' else ''}>{v}</option>"
-                               for k, v in PROFILES.items() if k.startswith("RAD4AI"))
+                               for k, v in PROFILES.items() if k.startswith(("RAD4AI", "RICIAN", "AI_")))
     strength_options = "".join(f"<option value='{k}' {'selected' if k=='STRONG' else ''}>{v}</option>"
                                 for k, v in STRENGTHS.items())
                                 
@@ -107,10 +107,10 @@ def print_studio_page(_: str = Depends(require_admin)):
 <section class='panel' style='background:linear-gradient(180deg,#0f172a 0%,#090d16 100%);border:1px solid rgba(16,185,129,0.25);border-radius:12px;padding:24px'>
   <div class='panel-head' style='display:flex;justify-content:space-between;align-items:center;margin-bottom:12px'>
     <div>
-      <h2 style='font-size:22px;color:#f8fafc;margin:0' data-en='??? RAD4AI Print-Master Studio' data-ar='??? ??????? ??????? ???? ??????'>??? RAD4AI Print-Master Studio</h2>
-      <p style='color:#94a3b8;margin:4px 0 0' data-en='Optical 3T Print Quality Mastering ? Zero-Grain Velvet Tissue ? Pure Black Air Background' data-ar='???? ????? 3T ??????? ??????? ??????? ? ????? ???? ???????? ? ????? ????? 100%'>Optical 3T Print Quality Mastering ? Zero-Grain Velvet Tissue ? Pure Black Air Background</p>
+      <h2 style='font-size:22px;color:#f8fafc;margin:0'>🖨️ RAD4AI Print-Master Studio</h2>
+      <p style='color:#94a3b8;margin:4px 0 0'>Rician-VST Physics Restoration · Zero-Grain Velvet Tissue · Pure Black Air Background</p>
     </div>
-    <span class='badge ok' style='font-size:13px;padding:6px 12px'>? Print Ultra Active</span>
+    <span class='badge ok' style='font-size:13px;padding:6px 12px'>✓ Print Ultra Active</span>
   </div>
 
   <div style='display:grid;grid-template-columns:1fr 1fr;gap:20px;margin-top:20px'>
@@ -118,8 +118,8 @@ def print_studio_page(_: str = Depends(require_admin)):
     <div style='background:rgba(30,41,59,0.6);border:2px dashed #3b82f6;border-radius:10px;padding:24px;text-align:center'>
       <input type='file' id='file-input' accept='.dcm,.zip,.png,.jpg,.jpeg' style='display:none' onchange='handleFileSelect(this.files)'>
       <div id='drop-zone' onclick="document.getElementById('file-input').click()" style='cursor:pointer;padding:20px'>
-        <div style='font-size:40px;margin-bottom:10px'>??</div>
-        <b style='color:#e2e8f0;font-size:16px' data-en='Click or Drag & Drop MRI file here' data-ar='???? ?? ???? ??? ?????? ???'>Click or Drag & Drop MRI file here</b>
+        <div style='font-size:40px;margin-bottom:10px'>📂</div>
+        <b style='color:#e2e8f0;font-size:16px'>Click or Drag & Drop MRI file here</b>
         <p style='color:#64748b;font-size:12px;margin:8px 0 0'>Supports DICOM (.dcm), Series (.zip), or Image (.png, .jpg)</p>
         <div id='selected-file-name' style='color:#38bdf8;margin-top:10px;font-weight:bold'></div>
       </div>
@@ -129,29 +129,29 @@ def print_studio_page(_: str = Depends(require_admin)):
     <div style='background:rgba(30,41,59,0.6);border:1px solid #334155;border-radius:10px;padding:20px;display:flex;flex-direction:column;justify-content:space-between'>
       <div>
         <div class='field' style='margin-bottom:14px'>
-          <label style='color:#cbd5e1;font-weight:bold;margin-bottom:6px;display:block' data-en='Enhancer Profile' data-ar='??????? ???????'>Enhancer Profile</label>
+          <label style='color:#cbd5e1;font-weight:bold;margin-bottom:6px;display:block'>Enhancer Profile</label>
           <select id='profile-select' style='width:100%;padding:10px;background:#0f172a;border:1px solid #475569;border-radius:6px;color:#f8fafc'>{{PROFILE_OPTIONS}}</select>
         </div>
         <div class='field' style='margin-bottom:14px'>
-          <label style='color:#cbd5e1;font-weight:bold;margin-bottom:6px;display:block' data-en='Print Strength' data-ar='??? ???????? ???????'>Print Strength</label>
+          <label style='color:#cbd5e1;font-weight:bold;margin-bottom:6px;display:block'>Print Strength</label>
           <select id='strength-select' style='width:100%;padding:10px;background:#0f172a;border:1px solid #475569;border-radius:6px;color:#f8fafc'>{{STRENGTH_OPTIONS}}</select>
         </div>
         <div style='margin-bottom:14px;display:flex;align-items:center;gap:10px'>
           <input type='checkbox' id='upscale-check' checked style='width:18px;height:18px'>
-          <label for='upscale-check' style='color:#e2e8f0;cursor:pointer' data-en='2x Super-Resolution Upscaling (512?512 Print Boost)' data-ar='?????? ????? 2x ?????? ?????? ???????'>2x Super-Resolution Upscaling (512?512 Print Boost)</label>
+          <label for='upscale-check' style='color:#e2e8f0;cursor:pointer'>2x Bicubic Print Interpolation (512×512 Display Boost)</label>
         </div>
         <div style='display:flex;align-items:center;gap:10px'>
           <input type='checkbox' id='send-ge-check' style='width:18px;height:18px'>
-          <label for='send-ge-check' style='color:#e2e8f0;cursor:pointer' data-en='Also push directly to GE Workstation (192.168.0.206)' data-ar='????? ???? ?????? ??? ???? GE'>Also push directly to GE Workstation (192.168.0.206)</label>
+          <label for='send-ge-check' style='color:#e2e8f0;cursor:pointer'>Also push directly to GE Workstation (192.168.0.206)</label>
         </div>
       </div>
-      <button id='enhance-btn' onclick='processUpload()' class='btn' style='background:linear-gradient(135deg,#059669,#10b981);font-size:15px;padding:12px;margin-top:16px;width:100%;font-weight:bold' data-en='?? Enhance for Printing' data-ar='?? ????? ???? ??????? ???????'>?? Enhance for Printing</button>
+      <button id='enhance-btn' onclick='processUpload()' class='btn' style='background:linear-gradient(135deg,#059669,#10b981);font-size:15px;padding:12px;margin-top:16px;width:100%;font-weight:bold'>✨ Enhance for Printing</button>
     </div>
   </div>
 
   <!-- Progress Bar -->
   <div id='progress-wrap' style='display:none;margin-top:20px'>
-    <div style='color:#38bdf8;font-weight:bold;margin-bottom:6px' id='progress-text'>Processing with RAD4AI Print-Master Engine?</div>
+    <div style='color:#38bdf8;font-weight:bold;margin-bottom:6px' id='progress-text'>Processing with RAD4AI Print-Master Engine…</div>
     <div style='width:100%;background:#1e293b;border-radius:4px;overflow:hidden;height:8px'>
       <div id='progress-bar' style='width:100%;background:#10b981;height:100%;animation:pulse 1.5s infinite'></div>
     </div>
@@ -160,10 +160,10 @@ def print_studio_page(_: str = Depends(require_admin)):
   <!-- Comparison & Result Display -->
   <div id='result-box' style='display:none;margin-top:24px;border-top:1px solid #334155;padding-top:20px'>
     <div style='display:flex;justify-content:space-between;align-items:center;margin-bottom:16px'>
-      <h3 style='margin:0;color:#f8fafc' data-en='Visual Comparison (Original vs. Print-Master Ultra)' data-ar='???????? ??????? (??????? ????? ???? ??????? ???????)'>Visual Comparison (Original vs. Print-Master Ultra)</h3>
+      <h3 style='margin:0;color:#f8fafc'>Visual Comparison (Original vs. RAD4AI Restored)</h3>
       <div style='display:flex;gap:10px'>
-        <button onclick='window.print()' class='btn' style='background:#3b82f6' data-en='??? Print Now' data-ar='??? ????? ????'>??? Print Now</button>
-        <a id='download-link' class='btn' style='background:#059669' download='enhanced_print.dcm' data-en='?? Download Enhanced File' data-ar='?? ????? ????? ??????'>?? Download Enhanced File</a>
+        <button onclick='window.print()' class='btn' style='background:#3b82f6'>🖨️ Print Now</button>
+        <a id='download-link' class='btn' style='background:#059669' download='enhanced_print.dcm'>⬇️ Download Enhanced File</a>
       </div>
     </div>
     <div style='display:grid;grid-template-columns:1fr 1fr;gap:16px'>
@@ -172,7 +172,7 @@ def print_studio_page(_: str = Depends(require_admin)):
         <img id='orig-img' style='max-width:100%;max-height:480px;border-radius:4px' src=''>
       </div>
       <div style='background:#000;border:1px solid #10b981;border-radius:8px;padding:10px;text-align:center;box-shadow:0 0 15px rgba(16,185,129,0.2)'>
-        <div style='color:#10b981;font-weight:bold;margin-bottom:8px'>? RAD4AI Print-Master Ultra (Film/Paper Quality)</div>
+        <div style='color:#10b981;font-weight:bold;margin-bottom:8px'>✨ RAD4AI Restored (Film/Paper Quality)</div>
         <img id='enh-img' style='max-width:100%;max-height:480px;border-radius:4px' src=''>
       </div>
     </div>
@@ -228,8 +228,8 @@ async function processUpload(){
     document.getElementById('download-link').href = data.download_url;
     document.getElementById('download-link').setAttribute('download', data.download_filename);
     document.getElementById('metrics-detail').innerHTML = 
-      '<b>Processing Time:</b> ' + data.metrics.seconds + 's ? <b>Dimensions:</b> ' + data.metrics.original_shape.join('?') + ' ? <b>' + data.metrics.enhanced_shape.join('?') + '</b>' +
-      (data.sent_ge ? ' ? <span style="color:#10b981">? Pushed to GE Workstation (192.168.0.206:4006)</span>' : '');
+      '<b>Processing Time:</b> ' + data.metrics.seconds + 's · <b>Dimensions:</b> ' + data.metrics.original_shape.join('×') + ' → <b>' + data.metrics.enhanced_shape.join('×') + '</b>' +
+      (data.sent_ge ? ' · <span style="color:#10b981">✓ Pushed to GE Workstation (192.168.0.206:4006)</span>' : '');
     document.getElementById('result-box').style.display = 'block';
     document.getElementById('result-box').scrollIntoView({ behavior:'smooth' });
   }catch(e){
@@ -320,7 +320,7 @@ async def enhance_studio(file: UploadFile = File(...), profile: str = Form("RAD4
                     pass
             
         strength_val = 1.0 if strength == "STRONG" else 0.8 if strength == "MEDIUM" else 0.5
-        mode = "3t_hd" if profile == "RAD4AI_3T_HD" else "print_master" if profile == "RAD4AI_PRINT_MASTER" else "ge_aw" if profile == "RAD4AI_GE_AW" else "spine_pro" if profile == "RAD4AI_SPINE_PRO" else "standard"
+        mode = "rician_nlm" if profile == "RICIAN_NLM_VST" else "3t_hd" if profile == "RAD4AI_3T_HD" else "print_master" if profile == "RAD4AI_PRINT_MASTER" else "ge_aw" if profile == "RAD4AI_GE_AW" else "spine_pro" if profile == "RAD4AI_SPINE_PRO" else "standard"
         
         if img_arr.ndim == 3 and img_arr.shape[0] in (3, 4):
             # RGB to Gray

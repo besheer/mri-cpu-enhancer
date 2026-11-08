@@ -8,12 +8,13 @@ from scipy.ndimage import gaussian_filter, sobel
 from app.enhancer import conservative_baseline
 
 PROFILE_INFO = {
-    "RAD4AI_3T_HD": {"label": "RAD4AI 3T-HD True Anatomy (Shock-Filter & Trabecular)", "guidance": "Kramer-Bruckner shock filter (1px sharp boundaries) + 3T trabecular bone micro-texture while preserving 100% true medical pathology.", "min_slices": 1, "research_only": False},
-    "RAD4AI_PRINT_MASTER": {"label": "RAD4AI Print-Master Ultra (3T Print Look)", "guidance": "Zero-grain soft tissue + optical film-print S-curve contrast + 100% zero-floor background for stunning film/paper printouts.", "min_slices": 1, "research_only": False},
-    "AI_SWIFT_DENOISE": {"label": "RAD4AI Denoise (2.5D NAFNet v2.0)", "guidance": "2.5D multi-slice deep learning denoising with auto-sequence intelligence.", "min_slices": 1, "research_only": False},
-    "RAD4AI_SPINE_PRO": {"label": "RAD4AI Spine & Ortho Pro (High-Clarity)", "guidance": "2.5D ultra-smooth marrow/muscle denoise + micro-edge disc crisping + coil shading equalization.", "min_slices": 1, "research_only": False},
+    "RICIAN_NLM_VST": {"label": "RAD4AI Rician-VST + Non-Local Means (Physics Safe)", "guidance": "Donoho Haar-MAD sigma estimation + Unbiased Rician VST + Integral-Image Non-Local Means & Tangent Coherence (Zero synthetic texture).", "min_slices": 1, "research_only": False},
+    "AI_SWIFT_DENOISE": {"label": "RAD4AI Denoise (2.5D NAFNet + Rician VST)", "guidance": "2.5D multi-slice deep learning + Rician VST denoising with auto-sequence intelligence.", "min_slices": 1, "research_only": False},
+    "RAD4AI_SPINE_PRO": {"label": "RAD4AI Spine & Ortho Pro (High-Clarity)", "guidance": "2.5D ultra-smooth marrow/muscle Rician debiasing + tangent-coherent disc/root borders + coil shading equalization.", "min_slices": 1, "research_only": False},
+    "RAD4AI_3T_HD": {"label": "RAD4AI 3T-HD True Anatomy (Anisotropic Tangent-Restore)", "guidance": "Structure-tensor tangent curve restoration + Rician debiasing + Non-Local Means (100% zero fake grain).", "min_slices": 1, "research_only": False},
     "RAD4AI_SR_15T": {"label": "RAD4AI Super-Resolution (1.5T Matrix Look)", "guidance": "Sub-pixel edge reconstruction + anti-staircasing + 2.5D Rician suppression for high-field clarity.", "min_slices": 1, "research_only": False},
     "RAD4AI_GE_AW": {"label": "RAD4AI GE-AW Workstation (AIR Recon + PURE/SCIC)", "guidance": "GE AW Workstation look: AIR Recon DL denoise + PURE/SCIC coil illumination equalization + zero-floor background.", "min_slices": 1, "research_only": False},
+    "RAD4AI_PRINT_MASTER": {"label": "RAD4AI Print-Master Ultra (Display / Film Print Only)", "guidance": "Display/Print-only S-curve contrast + zero-grain velvet tissue + zero-floor background (requires research/display acknowledgment).", "min_slices": 1, "research_only": True},
     "BASE_MILD": {"label": "Conservative Baseline", "guidance": "Safe reference filter suitable for initial baseline comparison.", "min_slices": 1, "research_only": False},
     "DENOISE_MEDIUM": {"label": "Medium Denoise", "guidance": "For noticeably noisy scans; review fine anatomical borders.", "min_slices": 1, "research_only": False},
     "EDGE_DENOISE_MILD": {"label": "Edge-Preserving Denoise", "guidance": "Conservative noise reduction with curvature anisotropic edge protection.", "min_slices": 1, "research_only": False},
@@ -47,11 +48,12 @@ def validate_selection(profile: str, description: str, instances: int, acknowled
     if profile.startswith("N4") and any(x in description.upper() for x in ("SCANO", "LOCALIZER", "SURVEY")):
         raise ValueError("N4 is not permitted on Localizer/Survey series")
     if info["research_only"] and not acknowledged:
-        raise ValueError("Research acknowledgment is required for CLAHE")
+        raise ValueError(f"Research/Display acknowledgment is required for {profile}")
     if strength == "STRONG" and not acknowledged:
         raise ValueError("Strong enhancement level requires explicit research acknowledgment")
 
 PREFIXES = {
+    "RICIAN_NLM_VST": "ENHANC-RNLM-",
     "RAD4AI_3T_HD": "ENHANC-3THD-",
     "RAD4AI_PRINT_MASTER": "ENHANC-PRINT-",
     "AI_SWIFT_DENOISE": "ENHANC-RAD4AI-",
@@ -127,10 +129,18 @@ def process_volume(volume: np.ndarray, profile: str, strength: str = "MEDIUM",
     started = time.perf_counter()
     source = volume
     seq_detected = "GENERAL_MR"
-    if profile in {"AI_SWIFT_DENOISE", "RAD4AI_SPINE_PRO", "RAD4AI_SR_15T", "RAD4AI_GE_AW", "RAD4AI_PRINT_MASTER", "RAD4AI_3T_HD"}:
+    if profile in {"RICIAN_NLM_VST", "AI_SWIFT_DENOISE", "RAD4AI_SPINE_PRO", "RAD4AI_SR_15T", "RAD4AI_GE_AW", "RAD4AI_PRINT_MASTER", "RAD4AI_3T_HD"}:
         from app.ai_engine import ai_engine
         strength_val = {"MILD": 0.5, "MEDIUM": 0.8, "STRONG": 1.0}[strength]
-        mode = "3t_hd" if profile == "RAD4AI_3T_HD" else "print_master" if profile == "RAD4AI_PRINT_MASTER" else "spine_pro" if profile == "RAD4AI_SPINE_PRO" else "sr_15t" if profile == "RAD4AI_SR_15T" else "ge_aw" if profile == "RAD4AI_GE_AW" else "standard"
+        mode = (
+            "rician_nlm" if profile == "RICIAN_NLM_VST"
+            else "3t_hd" if profile == "RAD4AI_3T_HD"
+            else "print_master" if profile == "RAD4AI_PRINT_MASTER"
+            else "spine_pro" if profile == "RAD4AI_SPINE_PRO"
+            else "sr_15t" if profile == "RAD4AI_SR_15T"
+            else "ge_aw" if profile == "RAD4AI_GE_AW"
+            else "standard"
+        )
         seq_detected = ai_engine.detect_sequence_type(description)
         output = ai_engine.enhance_volume(source, strength=strength_val, mode=mode, description=description)
     elif profile == "BASE_MILD":

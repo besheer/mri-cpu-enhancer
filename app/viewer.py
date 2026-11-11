@@ -463,6 +463,64 @@ def interactive_compare(job_id: int, message: str = "", error: str = "", _: str 
     src_sid = job["source_series_id"]
     out_sid = job["output_series_id"]
 
+    gemini_data = None
+    try:
+        if "gemini_audit" in job.keys() and job["gemini_audit"]:
+            gemini_data = json.loads(job["gemini_audit"])
+    except Exception:
+        pass
+
+    gemini_html = ""
+    if gemini_data and not gemini_data.get("error"):
+        findings_li = "".join(f"<li>{esc(f)}</li>" for f in gemini_data.get("preliminary_findings", []))
+        score_val = gemini_data.get("safety_score", 10)
+        score_badge = f"<span class='badge ok'>🛡️ Safety Score: {score_val}/10 ({gemini_data.get('verdict','PASS')})</span>"
+        model_badge = f"<span class='badge' style='background:#1e1b4b;color:#a5b4fc;border:1px solid #4338ca'>⚡ {esc(gemini_data.get('model_used','Gemini Vision'))}</span>"
+        gemini_html = f"""
+        <div style='background:linear-gradient(135deg, rgba(30,27,75,.4), rgba(15,23,42,.8));border:1px solid #4338ca;border-radius:12px;padding:14px 18px;margin-bottom:16px;color:#e2e8f0'>
+          <div style='display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:10px'>
+            <div style='display:flex;align-items:center;gap:10px'>
+              <h3 style='margin:0;color:#c7d2fe;font-size:16px'>🤖 Gemini Clinical AI Auditor & Second-Opinion</h3>
+              {model_badge}
+              {score_badge}
+            </div>
+            <form method='post' action='/admin/jobs/{job_id}/gemini-audit' style='margin:0'>
+              <button class='btn gray' style='font-size:12px;padding:4px 10px'>🔄 Re-Analyze with Gemini</button>
+            </form>
+          </div>
+          <div style='display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:14px;font-size:13.5px'>
+            <div style='background:rgba(0,0,0,.35);padding:10px 14px;border-radius:8px;border:1px solid rgba(255,255,255,0.06)'>
+              <b style='color:#38bdf8'>📋 Preliminary Radiologist Findings ({esc(gemini_data.get('sequence_region','MRI'))}):</b>
+              <ul style='margin:6px 0 0 18px;padding:0;color:#cbd5e1'>{findings_li}</ul>
+            </div>
+            <div style='background:rgba(0,0,0,.35);padding:10px 14px;border-radius:8px;border:1px solid rgba(255,255,255,0.06)'>
+              <b style='color:#34d399'>💬 ملخص التقرير الطبي (Clinical Impression):</b>
+              <p style='margin:6px 0 0;color:#e2e8f0;line-height:1.6;direction:rtl;text-align:right'>{esc(gemini_data.get('summary_ar',''))}</p>
+              <small style='display:block;margin-top:6px;color:#94a3b8'>{esc(gemini_data.get('summary_en',''))}</small>
+            </div>
+          </div>
+        </div>
+        """
+    else:
+        err_msg = f"<small style='color:#ef4444;margin-left:10px'>{esc(gemini_data.get('error'))}</small>" if (gemini_data and gemini_data.get("error")) else ""
+        gemini_html = f"""
+        <div style='background:#090d1a;border:1px solid #312e81;border-radius:10px;padding:10px 16px;margin-bottom:14px;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px'>
+          <div style='display:flex;align-items:center;gap:10px'>
+            <span style='font-size:20px'>🤖</span>
+            <div>
+              <b style='color:#c7d2fe;font-size:14px'>Gemini Clinical AI Auditor:</b>
+              <span class='muted' style='margin-left:6px'>Run instant Second-Opinion, Diagnostic Safety Audit & Preliminary Findings on this scan.</span>
+              {err_msg}
+            </div>
+          </div>
+          <form method='post' action='/admin/jobs/{job_id}/gemini-audit' style='margin:0'>
+            <button class='btn ai-btn' type='submit' style='background:linear-gradient(135deg,#4f46e5,#7c3aed);border-color:#6366f1;font-weight:700'>
+              🧠 Run Gemini Clinical AI Audit
+            </button>
+          </form>
+        </div>
+        """
+
     study_uid = ""
     src_desc = "Original Raw"
     out_desc = "RAD4AI Enhanced"
@@ -581,6 +639,7 @@ def interactive_compare(job_id: int, message: str = "", error: str = "", _: str 
         <div id='roi-readout' style='font-family:Consolas,monospace;color:#38bdf8;font-weight:700'>Click on image to inspect tissue SNR & SD...</div>
       </div>
 
+{gemini_html}
       <!-- Mode 1: Side by Side -->
       <div id='view-side' style='display:grid;grid-template-columns:1fr 1fr;gap:16px'>
         <div style='background:#020617;border:2px solid #334155;border-radius:12px;overflow:hidden;text-align:center;position:relative'>
@@ -998,6 +1057,15 @@ def approve(job_id: int, _: str = Depends(require_admin)):
     audit("MANUAL_RETURN_QUEUED", "comparison_job", job_id, f"center={center['name']}", actor=_)
     return RedirectResponse("/admin/studies?message=" + quote("Approved and added to PACS Return Queue"), 303)
 
+
+
+@router.post("/jobs/{job_id}/gemini-audit")
+def gemini_audit_route(job_id: int, _: str = Depends(require_admin)):
+    from app.gemini_auditor import audit_job_with_gemini
+    res = audit_job_with_gemini(job_id)
+    if "error" in res:
+        return RedirectResponse(f"/admin/jobs/{job_id}/compare?error=" + quote(f"Gemini Audit: {res['error']}"), 303)
+    return RedirectResponse(f"/admin/jobs/{job_id}/compare?message=" + quote("✅ اكتمل الفحص والتدقيق الطبي بواسطة Gemini AI بنجاح!"), 303)
 
 @router.post("/jobs/{job_id}/send-to-ge")
 def send_job_to_ge(job_id: int, _: str = Depends(require_admin)):

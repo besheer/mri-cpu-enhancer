@@ -13,7 +13,7 @@ import pydicom
 from pydicom.uid import generate_uid
 
 from app.enhancer import derive_with_pixels, derived_series_description
-from app.profiles import PREFIXES, PROFILES, process_volume, validate_selection
+from app.profiles import PREFIXES, PROFILE_INFO, PROFILES, process_volume, validate_selection
 from app.quality import evaluate_quality
 from app.store import audit, auto_eligible_profile_names, connect, enabled_profile_names, enqueue_return, get_center_by_aet, setting
 
@@ -103,7 +103,7 @@ class ComparisonWorker:
                 if origin.status_code == 200:
                     center = get_center_by_aet(origin.text.strip())
             validate_selection(profile, description, len(info.json().get("Instances", [])),
-                               acknowledged=(profile == "CLAHE_VIEW" or strength == "STRONG"),
+                               acknowledged=(bool(PROFILE_INFO.get(profile, {}).get("research_only")) or strength == "STRONG"),
                                strength=strength)
             archive = api.get(f"{self.url}/series/{series_id}/archive")
             archive.raise_for_status()

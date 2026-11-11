@@ -213,7 +213,7 @@ def initialize() -> None:
             "last_echo_status": "TEXT NOT NULL DEFAULT 'NOT_TESTED'",
             "last_echo_at": "TEXT",
             "auto_enhance_enabled": "INTEGER NOT NULL DEFAULT 0",
-            "auto_profile": "TEXT NOT NULL DEFAULT 'EDGE_DENOISE_MILD'",
+            "auto_profile": "TEXT NOT NULL DEFAULT 'RICIAN_NLM_VST'",
             "auto_strength": "TEXT NOT NULL DEFAULT 'MILD'",
         }
         for name, declaration in migrations.items():
@@ -281,8 +281,8 @@ def initialize() -> None:
         db.execute("UPDATE model_registry SET name='RAD4AI-NAFNet-03T-Clinical' WHERE name LIKE '%Swift%'")
         # Reference/display/unvalidated engines remain available for controlled
         # comparison but can never be selected by branch automation.
-        db.execute("UPDATE processing_tools SET auto_eligible=0 WHERE profile IN ('BASE_MILD','CLAHE_VIEW','RAD4AI_PRINT_MASTER','MONAI_MODEL','DIPY_DWI')")
-        db.execute("UPDATE centers SET auto_enhance_enabled=0 WHERE auto_profile IN ('BASE_MILD','CLAHE_VIEW','RAD4AI_PRINT_MASTER') OR auto_strength='STRONG'")
+        db.execute("UPDATE processing_tools SET auto_eligible=0 WHERE profile IN ('BASE_MILD','CLAHE_VIEW','RAD4AI_PRINT_MASTER','RAD4AI_3T_HD','MONAI_MODEL','DIPY_DWI')")
+        db.execute("UPDATE centers SET auto_enhance_enabled=0 WHERE auto_profile IN ('BASE_MILD','CLAHE_VIEW','RAD4AI_PRINT_MASTER','RAD4AI_3T_HD') OR auto_strength='STRONG'")
         # Protocol-acceleration experiments are comparison-only. This database
         # guard prevents a UI or worker mistake from placing them in Return Queue.
         db.execute("""
@@ -408,10 +408,16 @@ def enabled_profile_names() -> set[str]:
 
 
 def auto_eligible_profile_names() -> set[str]:
+    from app.profiles import PROFILE_INFO
     with connect() as db:
-        return {row[0] for row in db.execute(
+        db_allowed = {row[0] for row in db.execute(
             "SELECT profile FROM processing_tools WHERE enabled=1 AND available=1 AND auto_eligible=1"
         )}
+    code_allowed = {
+        k for k, info in PROFILE_INFO.items()
+        if info.get("auto_eligible", not info.get("research_only", False)) and not info.get("research_only", False)
+    }
+    return db_allowed & code_allowed
 
 
 def get_center_by_aet(aet: str):

@@ -8,20 +8,20 @@ from scipy.ndimage import gaussian_filter, sobel
 from app.enhancer import conservative_baseline
 
 PROFILE_INFO = {
-    "RICIAN_NLM_VST": {"label": "RAD4AI Rician-VST + Non-Local Means (Physics Safe)", "guidance": "Donoho Haar-MAD sigma estimation + Unbiased Rician VST + Integral-Image Non-Local Means & Tangent Coherence (Zero synthetic texture).", "min_slices": 1, "research_only": False},
-    "AI_SWIFT_DENOISE": {"label": "RAD4AI Denoise (2.5D NAFNet + Rician VST)", "guidance": "2.5D multi-slice deep learning + Rician VST denoising with auto-sequence intelligence.", "min_slices": 1, "research_only": False},
-    "RAD4AI_SPINE_PRO": {"label": "RAD4AI Spine & Ortho Pro (High-Clarity)", "guidance": "2.5D ultra-smooth marrow/muscle Rician debiasing + tangent-coherent disc/root borders + coil shading equalization.", "min_slices": 1, "research_only": False},
-    "RAD4AI_3T_HD": {"label": "RAD4AI 3T-HD True Anatomy (Anisotropic Tangent-Restore)", "guidance": "Structure-tensor tangent curve restoration + Rician debiasing + Non-Local Means (100% zero fake grain).", "min_slices": 1, "research_only": False},
-    "RAD4AI_SR_15T": {"label": "RAD4AI Super-Resolution (1.5T Matrix Look)", "guidance": "Sub-pixel edge reconstruction + anti-staircasing + 2.5D Rician suppression for high-field clarity.", "min_slices": 1, "research_only": False},
-    "RAD4AI_GE_AW": {"label": "RAD4AI GE-AW Workstation (AIR Recon + PURE/SCIC)", "guidance": "GE AW Workstation look: AIR Recon DL denoise + PURE/SCIC coil illumination equalization + zero-floor background.", "min_slices": 1, "research_only": False},
-    "RAD4AI_PRINT_MASTER": {"label": "RAD4AI Print-Master Ultra (Display / Film Print Only)", "guidance": "Display/Print-only S-curve contrast + zero-grain velvet tissue + zero-floor background (requires research/display acknowledgment).", "min_slices": 1, "research_only": True},
-    "BASE_MILD": {"label": "Conservative Baseline", "guidance": "Safe reference filter suitable for initial baseline comparison.", "min_slices": 1, "research_only": False},
-    "DENOISE_MEDIUM": {"label": "Medium Denoise", "guidance": "For noticeably noisy scans; review fine anatomical borders.", "min_slices": 1, "research_only": False},
-    "EDGE_DENOISE_MILD": {"label": "Edge-Preserving Denoise", "guidance": "Conservative noise reduction with curvature anisotropic edge protection.", "min_slices": 1, "research_only": False},
-    "N4_BIAS": {"label": "N4 Bias Field Only", "guidance": "For gradual coil illumination inhomogeneity; requires consistent 3D volume.", "min_slices": 8, "research_only": False},
-    "N4_DENOISE": {"label": "N4 + Denoise", "guidance": "Combined bias field correction and smoothing; compare before approval.", "min_slices": 8, "research_only": False},
-    "N4_EDGE_DENOISE": {"label": "N4 + Edge Denoise", "guidance": "Bias field correction with anisotropic edge-preserving denoise.", "min_slices": 8, "research_only": False},
-    "CLAHE_VIEW": {"label": "CLAHE (Research View)", "guidance": "Adaptive histogram contrast boost; not for primary diagnosis.", "min_slices": 1, "research_only": True},
+    "RICIAN_NLM_VST": {"label": "RAD4AI Rician-VST + Non-Local Means (Physics Safe)", "guidance": "Donoho Haar-MAD sigma estimation + Unbiased Rician VST + Integral-Image Non-Local Means & Tangent Coherence (Zero synthetic texture).", "min_slices": 1, "research_only": False, "auto_eligible": True},
+    "AI_SWIFT_DENOISE": {"label": "RAD4AI Denoise (2.5D NAFNet + Rician VST)", "guidance": "2.5D multi-slice deep learning + Rician VST denoising with auto-sequence intelligence.", "min_slices": 1, "research_only": False, "auto_eligible": True},
+    "RAD4AI_SPINE_PRO": {"label": "RAD4AI Spine & Ortho Pro (High-Clarity)", "guidance": "2.5D ultra-smooth marrow/muscle Rician debiasing + tangent-coherent disc/root borders + coil shading equalization.", "min_slices": 1, "research_only": False, "auto_eligible": True},
+    "RAD4AI_3T_HD": {"label": "RAD4AI 3T-HD True Anatomy (Anisotropic Tangent-Restore)", "guidance": "Structure-tensor tangent curve restoration + Rician debiasing + Non-Local Means (requires research/display acknowledgment).", "min_slices": 1, "research_only": True, "auto_eligible": False},
+    "RAD4AI_SR_15T": {"label": "RAD4AI Super-Resolution (1.5T Matrix Look)", "guidance": "Sub-pixel edge reconstruction + anti-staircasing + 2.5D Rician suppression for high-field clarity.", "min_slices": 1, "research_only": False, "auto_eligible": True},
+    "RAD4AI_GE_AW": {"label": "RAD4AI GE-AW Workstation (AIR Recon + PURE/SCIC)", "guidance": "GE AW Workstation look: AIR Recon DL denoise + PURE/SCIC coil illumination equalization + zero-floor background.", "min_slices": 1, "research_only": False, "auto_eligible": True},
+    "RAD4AI_PRINT_MASTER": {"label": "RAD4AI Print-Master Ultra (Display / Film Print Only)", "guidance": "Display/Print-only S-curve contrast + zero-grain velvet tissue + zero-floor background (requires research/display acknowledgment).", "min_slices": 1, "research_only": True, "auto_eligible": False},
+    "BASE_MILD": {"label": "Conservative Baseline", "guidance": "Safe reference filter suitable for initial baseline comparison.", "min_slices": 1, "research_only": False, "auto_eligible": False},
+    "DENOISE_MEDIUM": {"label": "Medium Denoise", "guidance": "For noticeably noisy scans; review fine anatomical borders.", "min_slices": 1, "research_only": False, "auto_eligible": True},
+    "EDGE_DENOISE_MILD": {"label": "Edge-Preserving Denoise", "guidance": "Conservative noise reduction with curvature anisotropic edge protection.", "min_slices": 1, "research_only": False, "auto_eligible": True},
+    "N4_BIAS": {"label": "N4 Bias Field Only", "guidance": "For gradual coil illumination inhomogeneity; requires consistent 3D volume.", "min_slices": 8, "research_only": False, "auto_eligible": True},
+    "N4_DENOISE": {"label": "N4 + Denoise", "guidance": "Combined bias field correction and smoothing; compare before approval.", "min_slices": 8, "research_only": False, "auto_eligible": True},
+    "N4_EDGE_DENOISE": {"label": "N4 + Edge Denoise", "guidance": "Bias field correction with anisotropic edge-preserving denoise.", "min_slices": 8, "research_only": False, "auto_eligible": True},
+    "CLAHE_VIEW": {"label": "CLAHE (Research View)", "guidance": "Adaptive histogram contrast boost; not for primary diagnosis.", "min_slices": 1, "research_only": True, "auto_eligible": False},
 }
 PROFILES = {key: value["label"] for key, value in PROFILE_INFO.items()}
 STRENGTHS = {"MILD": "Mild", "MEDIUM": "Medium", "STRONG": "Strong (Research)"}
@@ -31,9 +31,7 @@ def recommendation(description: str, instances: int) -> tuple[str, str]:
     name = description.upper()
     if any(word in name for word in ("SCANO", "LOCALIZER", "SURVEY")):
         return "BASE_MILD", "Localizer/Survey: Do not apply N4 or aggressive enhancement."
-    if any(word in name for word in ("SPINE", "LUMBAR", "CERVICAL", "DORSAL", "THORACIC", "SHOULDER", "KNEE", "JOINT")):
-        return "RAD4AI_SPINE_PRO", "Recommended: RAD4AI Spine & Ortho Pro with coil shading correction and crisp disc/tendon borders."
-    return "AI_SWIFT_DENOISE", "Recommended: RAD4AI NAFNet v2.0 AI model trained on 0.3T MRI with anatomical edge preservation."
+    return "RICIAN_NLM_VST", "Recommended: RAD4AI Rician-VST + Non-Local Means physics-safe restoration (zero synthetic texture)."
 
 
 def validate_selection(profile: str, description: str, instances: int, acknowledged: bool = False,
@@ -176,11 +174,17 @@ def process_volume(volume: np.ndarray, profile: str, strength: str = "MEDIUM",
     span = max(float(np.percentile(src, 99) - np.percentile(src, 1)), 1.0)
     src_noise = float(np.std(src - gaussian_filter(src, sigma=(0, 1, 1))))
     dst_noise = float(np.std(dst - gaussian_filter(dst, sigma=(0, 1, 1))))
-    src_gradient = np.sqrt(sum(sobel(src, axis=axis) ** 2 for axis in range(3)))
-    dst_gradient = np.sqrt(sum(sobel(dst, axis=axis) ** 2 for axis in range(3)))
-    edge_mask = src_gradient >= np.percentile(src_gradient, 90)
-    edge_error = float(np.mean(np.abs(dst_gradient[edge_mask] - src_gradient[edge_mask])))
-    edge_reference = max(float(np.mean(src_gradient[edge_mask])), 1e-6)
+    src_smooth = gaussian_filter(src, sigma=(0, 1.0, 1.0))
+    dst_smooth = gaussian_filter(dst, sigma=(0, 1.0, 1.0))
+    g_src = np.hypot(sobel(src_smooth, axis=1), sobel(src_smooth, axis=2)).ravel()
+    g_dst = np.hypot(sobel(dst_smooth, axis=1), sobel(dst_smooth, axis=2)).ravel()
+    if g_src.std() > 1e-9 and g_dst.std() > 1e-9:
+        raw_corr = float(np.corrcoef(g_src, g_dst)[0, 1])
+        if np.isnan(raw_corr):
+            raw_corr = 0.0
+        edge_corr_pct = round(max(0.0, min(1.0, raw_corr)) * 100.0, 2)
+    else:
+        edge_corr_pct = 100.0
     metrics = {
         "strength": strength,
         "sequence_mode": seq_detected,
@@ -190,6 +194,6 @@ def process_volume(volume: np.ndarray, profile: str, strength: str = "MEDIUM",
         "noise_before": round(src_noise, 3),
         "noise_after": round(dst_noise, 3),
         "noise_change_percent": round((dst_noise - src_noise) * 100 / max(src_noise, 1e-6), 2),
-        "edge_preservation_percent": round(100 * max(0.0, 1.0 - edge_error / edge_reference), 2),
+        "edge_preservation_percent": edge_corr_pct,
     }
     return output, metrics

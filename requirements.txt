@@ -9,4 +9,4 @@ pytest==8.4.1
 httpx==0.28.1
 psutil==7.0.0
 pynetdicom==3.0.4
-onnxruntime==1.20.1
+# Optional ONNX neural acceleration (install via `pip install .[onnx]`; RICIAN_NLM_VST physics core runs without it)

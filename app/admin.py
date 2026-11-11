@@ -78,7 +78,7 @@ def clean(data: dict[str, object]) -> dict[str, object]:
     attempts = int(data.get("max_return_attempts", 3))
     if not 1 <= attempts <= 10:
         raise ValueError("Max return attempts must be between 1 and 10")
-    auto_profile = str(data.get("auto_profile", "EDGE_DENOISE_MILD"))
+    auto_profile = str(data.get("auto_profile", "RICIAN_NLM_VST"))
     auto_strength = str(data.get("auto_strength", "MILD"))
     if auto_profile not in ENHANCE_PROFILES or auto_strength not in STRENGTHS:
         raise ValueError("Invalid branch enhancement profile")
@@ -294,7 +294,7 @@ def center_form(center=None) -> str:
     return_options = "".join(f"<option value='{key}' {'selected' if c.get('return_policy','MANUAL')==key else ''}>{label}</option>" for key,label in RETURN_POLICIES.items())
     auto_allowed = auto_eligible_profile_names()
     auto_profiles = "".join(
-        f"<option value='{key}' {'selected' if c.get('auto_profile','AI_SWIFT_DENOISE')==key else ''}>{esc(label)}</option>"
+        f"<option value='{key}' {'selected' if c.get('auto_profile','RICIAN_NLM_VST')==key else ''}>{esc(label)}</option>"
         for key, label in ENHANCE_PROFILES.items() if key in auto_allowed
     )
     auto_strengths = "".join(f"<option value='{key}' {'selected' if c.get('auto_strength','MILD')==key else ''}>{esc(label)}</option>" for key,label in STRENGTHS.items())

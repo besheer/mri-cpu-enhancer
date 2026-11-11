@@ -84,7 +84,7 @@ def main():
     receiver_ip = wait_for_receiver()
     cleanup_e2e()
     with connect() as db:
-        cur = db.execute("INSERT INTO centers(name,slug,source_ip,source_aet,return_ip,return_aet,return_port,network_mode,return_policy,last_echo_status,auto_enhance_enabled,auto_profile,auto_strength) VALUES(?,?,?,?,?,?,11112,'VPN','AUTO_PASS','PASS',1,'RAD4AI_GE_AW','MEDIUM')",
+        cur = db.execute("INSERT INTO centers(name,slug,source_ip,source_aet,return_ip,return_aet,return_port,network_mode,return_policy,last_echo_status,auto_enhance_enabled,auto_profile,auto_strength) VALUES(?,?,?,?,?,?,11112,'VPN','AUTO_PASS','PASS',1,'RICIAN_NLM_VST','MEDIUM')",
                          ("E2E Synthetic", slugify("E2E Synthetic"), enhancer_ip, SOURCE_AET, receiver_ip, RETURN_AET))
         center_id = cur.lastrowid
     study_uid, series_uid = generate_uid(), generate_uid()

@@ -155,15 +155,16 @@ def png_rgb(array: np.ndarray) -> bytes:
 def profile_form(series_id: str, description: str, instances: int, existing_job=None) -> str:
     recommended, _reason = recommendation(description, instances)
     enabled = enabled_profile_names()
-    if "RAD4AI_SPINE_PRO" in enabled and not any(w in description.upper() for w in ("SCANO", "LOCALIZER", "SURVEY")):
-        recommended = "RAD4AI_SPINE_PRO"
-    elif "AI_SWIFT_DENOISE" in enabled and not any(w in description.upper() for w in ("SCANO", "LOCALIZER", "SURVEY")):
-        recommended = "AI_SWIFT_DENOISE"
+    if recommended not in enabled:
+        if "RICIAN_NLM_VST" in enabled and not any(w in description.upper() for w in ("SCANO", "LOCALIZER", "SURVEY")):
+            recommended = "RICIAN_NLM_VST"
+        elif "BASE_MILD" in enabled:
+            recommended = "BASE_MILD"
     options = "".join(
         f"<option value='{key}' {'selected' if key == recommended else ''} title='{esc(PROFILE_INFO[key]['guidance'])}'>{esc(label)}</option>"
         for key, label in PROFILES.items() if key in enabled
     )
-    default_strength = "MEDIUM" if recommended in {"AI_SWIFT_DENOISE", "RAD4AI_SPINE_PRO"} else "MILD"
+    default_strength = "MEDIUM" if recommended in {"RICIAN_NLM_VST", "AI_SWIFT_DENOISE", "RAD4AI_SPINE_PRO"} else "MILD"
     strengths = "".join(f"<option value='{key}' {'selected' if key == default_strength else ''}>{esc(label)}</option>" for key, label in STRENGTHS.items())
     compare_btn = ""
     if existing_job and existing_job["status"] == "ready" and existing_job["output_series_id"]:
@@ -171,7 +172,7 @@ def profile_form(series_id: str, description: str, instances: int, existing_job=
     return (f"<div class='series-choice'><input class='series-check' type='checkbox' "
             f"value='{series_id}' aria-label='Select {esc(description)}'>"
             f"<form method='post' action='/admin/series/{series_id}/ai-swift' class='ai-quick-form'>"
-            f"<button class='btn ai-btn' title='Instant RAD4AI Spine & Ortho Pro High-Clarity Enhancement'>⚡ Instant RAD4AI Pro</button></form>"
+            f"<button class='btn ai-btn' title='Instant RAD4AI Rician-VST + NLM Physics-Safe Enhancement'>⚡ Instant RAD4AI Rician-NLM</button></form>"
             f"<form method='post' action='/admin/series/{series_id}/enqueue' class='actions enqueue-form'>"
             f"<select name='profile' style='padding:7px;border-radius:7px'>{options}</select>"
             f"<select name='strength' style='padding:7px;border-radius:7px'>{strengths}</select>"
@@ -881,33 +882,35 @@ def interactive_compare(job_id: int, message: str = "", error: str = "", _: str 
 
     gemini_html = ""
     if gemini_data and not gemini_data.get("error"):
-        findings_li = "".join(f"<li>{esc(f)}</li>" for f in gemini_data.get("preliminary_findings", []))
+        metrics_list = (
+            gemini_data.get("quantitative_metrics")
+            or gemini_data.get("signal_metrics")
+            or gemini_data.get("preliminary_findings")
+            or []
+        )
+        findings_li = "".join(f"<li>{esc(f)}</li>" for f in metrics_list)
         score_val = gemini_data.get("safety_score", 10)
-        score_badge = f"<span class='badge ok'>🛡️ Safety Score: {score_val}/10 ({gemini_data.get('verdict','PASS')})</span>"
-        model_badge = f"<span class='badge' style='background:#1e1b4b;color:#a5b4fc;border:1px solid #4338ca'>⚡ {esc(gemini_data.get('model_used','Gemini Vision'))}</span>"
+        score_badge = f"<span class='badge ok'>🛡️ QC Score: {score_val}/10 ({gemini_data.get('verdict','PASS')})</span>"
+        model_badge = f"<span class='badge' style='background:#1e1b4b;color:#a5b4fc;border:1px solid #4338ca'>⚡ {esc(gemini_data.get('model_used','Local Rician-Physics QC Engine'))}</span>"
         gemini_html = f"""
         <div style='background:linear-gradient(135deg, rgba(30,27,75,.4), rgba(15,23,42,.8));border:1px solid #4338ca;border-radius:12px;padding:14px 18px;margin-bottom:16px;color:#e2e8f0'>
           <div style='display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:10px'>
             <div style='display:flex;align-items:center;gap:10px'>
-              <h3 style='margin:0;color:#c7d2fe;font-size:16px'>🛡️ RAD4AI Clinical Safety & Physics Auditor</h3>
+              <h3 style='margin:0;color:#c7d2fe;font-size:16px'>🛡️ RAD4AI On-Premise Signal & Physics Auditor (Zero PHI Egress)</h3>
               {model_badge}
               {score_badge}
             </div>
             <form method='post' action='/admin/jobs/{job_id}/gemini-audit' style='margin:0;display:inline-flex;align-items:center;gap:10px'>
-              <label style='font-size:11.5px;color:#94a3b8;cursor:pointer' title='Only works if ALLOW_EXTERNAL_CLOUD_AUDIT=1 is enabled on server'>
-                <input type='checkbox' name='allow_cloud' value='1' onclick="if(this.checked && !confirm('⚠️ تنبيه خصوصية: تفعيل هذا الخيار سيرسل مصفوفة الصورة (بدون بيانات DICOM) إلى خدمة Google Gemini السحابية الخارجية. هل توافق؟\\n\\nPrivacy Notice: Enabling this sends de-identified image pixels to external Google Gemini Cloud. Proceed?')) this.checked=false;">
-                ☁️ Cloud Gemini Opt-In (External)
-              </label>
-              <button class='btn gray' style='font-size:12px;padding:4px 10px'>🔄 Re-Run Safety Audit</button>
+              <button class='btn gray' style='font-size:12px;padding:4px 10px'>🔄 Re-Run Local Physics Audit</button>
             </form>
           </div>
           <div style='display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:14px;font-size:13.5px'>
             <div style='background:rgba(0,0,0,.35);padding:10px 14px;border-radius:8px;border:1px solid rgba(255,255,255,0.06)'>
-              <b style='color:#38bdf8'>📋 Preliminary Radiologist Findings ({esc(gemini_data.get('sequence_region','MRI'))}):</b>
+              <b style='color:#38bdf8'>📊 Quantitative Signal & Physics Metrics ({esc(gemini_data.get('sequence_region','MRI'))}):</b>
               <ul style='margin:6px 0 0 18px;padding:0;color:#cbd5e1'>{findings_li}</ul>
             </div>
             <div style='background:rgba(0,0,0,.35);padding:10px 14px;border-radius:8px;border:1px solid rgba(255,255,255,0.06)'>
-              <b style='color:#34d399'>💬 ملخص التقرير الطبي (Clinical Impression):</b>
+              <b style='color:#34d399'>💬 ملخص الفحص الفيزيائي (Quantitative QC Summary):</b>
               <p style='margin:6px 0 0;color:#e2e8f0;line-height:1.6;direction:rtl;text-align:right'>{esc(gemini_data.get('summary_ar',''))}</p>
               <small style='display:block;margin-top:6px;color:#94a3b8'>{esc(gemini_data.get('summary_en',''))}</small>
             </div>
@@ -921,18 +924,14 @@ def interactive_compare(job_id: int, message: str = "", error: str = "", _: str 
           <div style='display:flex;align-items:center;gap:10px'>
             <span style='font-size:20px'>🛡️</span>
             <div>
-              <b style='color:#c7d2fe;font-size:14px'>RAD4AI Clinical Safety & Physics Auditor (100% On-Premise Default):</b>
-              <span class='muted' style='margin-left:6px'>Runs locally inside your server (Rician Sigma, SSIM, Edge Correlation & Zero-Hallucination check — no patient data leaves network).</span>
+              <b style='color:#c7d2fe;font-size:14px'>RAD4AI On-Premise Signal & Physics Auditor (100% Local — Zero PHI Egress):</b>
+              <span class='muted' style='margin-left:6px'>Runs deterministically inside your local server (Rician Sigma, Global/Local SSIM, Edge Pearson r & Macro Drift check — zero external cloud calls).</span>
               {err_msg}
             </div>
           </div>
           <form method='post' action='/admin/jobs/{job_id}/gemini-audit' style='margin:0;display:inline-flex;align-items:center;gap:12px'>
-            <label style='font-size:12px;color:#94a3b8;cursor:pointer' title='Requires ALLOW_EXTERNAL_CLOUD_AUDIT=1 on server'>
-              <input type='checkbox' name='allow_cloud' value='1' onclick="if(this.checked && !confirm('⚠️ تنبيه خصوصية: تفعيل هذا الخيار سيرسل مصفوفة الصورة (بدون بيانات DICOM) إلى خدمة Google Gemini السحابية الخارجية. هل توافق؟\\n\\nPrivacy Notice: Enabling this sends de-identified image pixels to external Google Gemini Cloud. Proceed?')) this.checked=false;">
-              ☁️ Cloud Gemini Opt-In (External)
-            </label>
             <button class='btn ai-btn' type='submit' style='background:linear-gradient(135deg,#059669,#10b981);border-color:#10b981;font-weight:700'>
-              🛡️ Run Local Safety Audit (فحص محلي آمن)
+              🛡️ Run Local Physics Audit (فحص فيزيائي محلي)
             </button>
           </form>
         </div>
@@ -1265,7 +1264,7 @@ def quick_ai_swift(series_id: str, request: Request, _: str = Depends(require_ad
         description = str(item.get("MainDicomTags", {}).get("SeriesDescription", ""))
         if is_derived_series(description):
             raise ValueError("Cannot reprocess an already enhanced series")
-        chosen_profile = "RAD4AI_SPINE_PRO" if "RAD4AI_SPINE_PRO" in enabled_profile_names() else "AI_SWIFT_DENOISE"
+        chosen_profile = "RICIAN_NLM_VST" if "RICIAN_NLM_VST" in enabled_profile_names() else "AI_SWIFT_DENOISE"
         validate_selection(chosen_profile, description, len(item.get("Instances", [])), True, "MEDIUM")
     except (httpx.HTTPError, ValueError) as exc:
         raise HTTPException(422, str(exc)) from exc
@@ -1314,7 +1313,7 @@ def safe_preset(series_id: str, _: str = Depends(require_admin)):
             raise ValueError("Cannot run enhancement on a derived series")
     except (httpx.HTTPError, ValueError) as exc:
         raise HTTPException(422, str(exc)) from exc
-    job_id = enqueue_comparison(series_id, "AI_SWIFT_DENOISE", "MEDIUM")
+    job_id = enqueue_comparison(series_id, "RICIAN_NLM_VST", "MEDIUM")
     return JSONResponse({"ok": True, "count": 1, "job_ids": [job_id]})
 
 
@@ -1483,10 +1482,10 @@ def approve(job_id: int, _: str = Depends(require_admin)):
 @router.post("/jobs/{job_id}/gemini-audit")
 def gemini_audit_route(job_id: int, allow_cloud: str | None = Form(None), _: str = Depends(require_admin)):
     from app.gemini_auditor import audit_job_with_gemini
-    res = audit_job_with_gemini(job_id, allow_cloud=bool(allow_cloud))
+    res = audit_job_with_gemini(job_id, allow_cloud=(allow_cloud == "1"))
     if "error" in res:
-        return RedirectResponse(f"/admin/jobs/{job_id}/compare?error=" + quote(f"Safety Audit: {res['error']}"), 303)
-    return RedirectResponse(f"/admin/jobs/{job_id}/compare?message=" + quote("✅ اكتمل الفحص والتدقيق الفيزيائي/الطبي بنجاح!"), 303)
+        return RedirectResponse(f"/admin/jobs/{job_id}/compare?error=" + quote(f"Physics Audit: {res['error']}"), 303)
+    return RedirectResponse(f"/admin/jobs/{job_id}/compare?message=" + quote("✅ اكتمل الفحص الفيزيائي المحلي للإشارة بنجاح!"), 303)
 
 @router.post("/jobs/{job_id}/send-to-ge")
 def send_job_to_ge(job_id: int, _: str = Depends(require_admin)):

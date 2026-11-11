@@ -111,27 +111,25 @@ class MRIAIEngine:
         has_onnx = self.is_available
         input_name = self.session.get_inputs()[0].name if has_onnx else ""
 
-        # Estimate one global Rician noise sigma on the middle slice so inter-slice appearance is consistent
+        # Compute one global 3D volume intensity window so relative inter-slice contrast is 100% preserved
+        vol_f = volume.astype(np.float32)
+        vol_low, vol_high = np.percentile(vol_f, (1.0, 99.0))
+        vol_low = float(vol_low)
+        vol_span = max(float(vol_high - vol_low), 1e-4)
+
+        # Estimate one global Rician noise sigma on the middle slice using the unified volume window
         mid_idx = num_slices // 2
-        mid_src = volume[mid_idx].astype(np.float32)
-        mid_low, mid_high = np.percentile(mid_src, (1.0, 99.0))
-        mid_span = max(float(mid_high - mid_low), 1e-4)
-        mid_norm = np.clip((mid_src - mid_low) / mid_span, 0.0, 1.0)
+        mid_src = vol_f[mid_idx]
+        mid_norm = np.clip((mid_src - vol_low) / vol_span, 0.0, 1.0)
         global_sigma = estimate_sigma(mid_norm)
 
         norm_slices = []
         raw_norm_slices = []
         base_denoised_slices = []
-        spans_lows = []
 
         for i in range(num_slices):
-            src = volume[i].astype(np.float32)
-            low = float(np.percentile(src, 1.0))
-            high = float(np.percentile(src, 99.0))
-            span = max(float(high - low), 1e-4)
-            spans_lows.append((low, span))
-
-            norm = np.ascontiguousarray(np.clip((src - low) / span, 0.0, 1.0), dtype=np.float32)
+            src = vol_f[i]
+            norm = np.ascontiguousarray(np.clip((src - vol_low) / vol_span, 0.0, 1.0), dtype=np.float32)
             raw_norm_slices.append(norm)
 
             if mode in ("spine_pro", "sr_15t", "ge_aw", "print_master", "3t_hd"):
@@ -172,7 +170,6 @@ class MRIAIEngine:
         results = []
         for i in range(num_slices):
             slice_2d = volume[i]
-            low, span = spans_lows[i]
             norm_work = norm_slices[i]
             curr_clean = base_denoised_slices[i]
 
@@ -227,7 +224,7 @@ class MRIAIEngine:
             bg_mask = np.clip((bg_threshold - norm_work) / bg_threshold, 0.0, 1.0)
             enhanced = enhanced * (1.0 - bg_suppress_factor * bg_mask)
 
-            restored = enhanced * span + low
+            restored = enhanced * vol_span + vol_low
 
             if np.issubdtype(slice_2d.dtype, np.integer):
                 info = np.iinfo(slice_2d.dtype)

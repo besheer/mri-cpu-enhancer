@@ -11,6 +11,16 @@ def test_quality_gate_passes_conservative_result() -> None:
     assert reasons
 
 
+def test_quality_gate_passes_03t_strong_rician_suppression_with_preserved_edges() -> None:
+    status, reasons = evaluate_quality({
+        "edge_preservation_percent": 89.5,
+        "normalized_mae": 0.08,
+        "noise_change_percent": -72.0,
+    }, 18, 18)
+    assert status == "PASS"
+    assert reasons
+
+
 def test_quality_gate_warns_for_borderline_result() -> None:
     status, _ = evaluate_quality({
         "edge_preservation_percent": 82,
@@ -28,4 +38,3 @@ def test_quality_gate_fails_instance_mismatch_and_excessive_change() -> None:
     }, 15, 14)
     assert status == "FAIL"
     assert any("Instance count mismatch" in reason for reason in reasons)
-

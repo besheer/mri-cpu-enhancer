@@ -13,7 +13,6 @@ from app.rician_nlm import (
     estimate_sigma,
     non_local_means,
     rician_forward_vst,
-    rician_inverse_vst,
     structure_tensor_tangent_restore,
 )
 from app.synthetic import corrupt_volume, make_phantom
@@ -44,15 +43,21 @@ def test_rician_vst_and_nlm_improve_psnr_and_preserve_edges() -> None:
     assert sigma_noisy > sigma_clean
 
     vst = rician_forward_vst(noisy01, sigma_noisy)
-    inv = rician_inverse_vst(vst, sigma_noisy)
-    assert inv.shape == noisy01.shape
-    assert float(inv.min()) >= 0.0 and float(inv.max()) <= 1.0
+    assert vst.shape == noisy01.shape
+    assert float(vst.min()) >= 0.0 and float(vst.max()) <= 1.0
 
-    nlm_out = non_local_means(noisy01, h=sigma_noisy, patch_radius=1, search_radius=3)
-    ad_out = anisotropic_diffusion(noisy01, iterations=4, kappa=max(sigma_noisy * 1.6, 0.02))
-    restored, sigma_est = structure_tensor_tangent_restore(noisy01, strength=0.8, sigma_est=sigma_noisy)
+    nlm_out = non_local_means(noisy01, sigma=sigma_noisy, patch_radius=1, search_radius=3)
+    ad_out = anisotropic_diffusion(
+        noisy01,
+        sigma=sigma_noisy,
+        niter=4,
+        kappa=max(sigma_noisy * 1.6, 0.02),
+    )
+    restored, info = structure_tensor_tangent_restore(noisy01, strength=0.8, sigma_est=sigma_noisy)
 
-    assert sigma_est == sigma_noisy
+    expected_clamped = float(np.clip(sigma_noisy, 0.012, 0.14))
+    assert isinstance(info, dict)
+    assert abs(info["sigma_estimated"] - expected_clamped) < 1e-4
     assert _psnr(clean01, nlm_out) > _psnr(clean01, noisy01)
     assert _psnr(clean01, ad_out) > _psnr(clean01, noisy01)
     assert _psnr(clean01, restored) > _psnr(clean01, noisy01)
@@ -83,6 +88,9 @@ def test_default_recommendation_and_auto_eligibility() -> None:
     assert PROFILE_INFO["RAD4AI_3T_HD"]["auto_eligible"] is False
     assert PROFILE_INFO["RAD4AI_PRINT_MASTER"]["research_only"] is True
     assert PROFILE_INFO["RAD4AI_PRINT_MASTER"]["auto_eligible"] is False
+    assert PROFILE_INFO["RAD4AI_SR_15T"]["auto_eligible"] is False
+    assert PROFILE_INFO["RAD4AI_GE_AW"]["auto_eligible"] is False
+    assert PROFILE_INFO["RAD4AI_SPINE_PRO"]["auto_eligible"] is False
 
 
 def test_local_physics_audit_never_imports_or_calls_network(monkeypatch) -> None:

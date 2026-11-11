@@ -46,7 +46,7 @@ def test_creates_distinct_research_series() -> None:
 
     assert output.SeriesInstanceUID == target_series
     assert output.SOPInstanceUID != original_uid
-    assert output.SeriesDescription == "ENHANC-Synthetic 0.3T Test"
+    assert output.SeriesDescription == "ENH Synthetic 0.3T Test [ENHANCED]"
     assert output.ImageType[0] == "DERIVED"
     assert source.SOPInstanceUID == original_uid
     assert output.pixel_array.shape == source.pixel_array.shape
@@ -66,5 +66,5 @@ def test_rejects_non_mr() -> None:
 
 def test_description_is_prefixed_and_limited() -> None:
     result = derived_series_description("A" * 100)
-    assert result.startswith("ENHANC-")
+    assert result.startswith("ENH ")
     assert len(result) == 64

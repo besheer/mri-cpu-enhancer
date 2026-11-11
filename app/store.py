@@ -281,8 +281,8 @@ def initialize() -> None:
         db.execute("UPDATE model_registry SET name='RAD4AI-NAFNet-03T-Clinical' WHERE name LIKE '%Swift%'")
         # Reference/display/unvalidated engines remain available for controlled
         # comparison but can never be selected by branch automation.
-        db.execute("UPDATE processing_tools SET auto_eligible=0 WHERE profile IN ('BASE_MILD','CLAHE_VIEW','RAD4AI_PRINT_MASTER','RAD4AI_3T_HD','MONAI_MODEL','DIPY_DWI')")
-        db.execute("UPDATE centers SET auto_enhance_enabled=0 WHERE auto_profile IN ('BASE_MILD','CLAHE_VIEW','RAD4AI_PRINT_MASTER','RAD4AI_3T_HD') OR auto_strength='STRONG'")
+        db.execute("UPDATE processing_tools SET auto_eligible=0 WHERE profile IN ('BASE_MILD','CLAHE_VIEW','RAD4AI_PRINT_MASTER','RAD4AI_3T_HD','RAD4AI_SR_15T','RAD4AI_GE_AW','RAD4AI_SPINE_PRO','AI_SWIFT_DENOISE','MONAI_MODEL','DIPY_DWI')")
+        db.execute("UPDATE centers SET auto_enhance_enabled=0 WHERE auto_profile IN ('BASE_MILD','CLAHE_VIEW','RAD4AI_PRINT_MASTER','RAD4AI_3T_HD','RAD4AI_SR_15T','RAD4AI_GE_AW','RAD4AI_SPINE_PRO','AI_SWIFT_DENOISE') OR auto_strength='STRONG'")
         # Protocol-acceleration experiments are comparison-only. This database
         # guard prevents a UI or worker mistake from placing them in Return Queue.
         db.execute("""

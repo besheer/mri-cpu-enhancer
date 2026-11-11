@@ -151,33 +151,32 @@ def structure_tensor_tangent_restore(
     work = a * (1.0 - 0.65 * dark_gate) + work * (0.65 * dark_gate)
 
     # 2. Multi-scale Gaussian pyramid & Guide for Vectorized NLM
-    g08 = gaussian_filter(work, sigma=0.75)
-    g18 = gaussian_filter(work, sigma=1.80)
-    g40 = gaussian_filter(work, sigma=3.90)
-    g72 = gaussian_filter(work, sigma=7.20)
+    g08 = gaussian_filter(work, sigma=0.65)
+    g14 = gaussian_filter(work, sigma=1.15)
+    g40 = gaussian_filter(work, sigma=2.80)
 
     nlm_clean = non_local_means(
         work,
-        sigma=max(sigma, 0.025),
-        patch_radius=2,
+        sigma=max(sigma, 0.02),
+        patch_radius=1,
         search_radius=3,
-        h_factor=0.85 + 0.35 * float(strength),
-        guide=g18,
+        h_factor=0.75 + 0.30 * float(strength),
+        guide=g08,
     )
 
-    # 3. Structure Tensor (Jxx, Jxy, Jyy) integrated at scale rho=3.4
+    # 3. Structure Tensor (Jxx, Jxy, Jyy) integrated at scale rho=2.4
     #    Cancels random circular 4-6px speckle blobs (anisotropy -> 0) while reinforcing
     #    real anatomical borders & thin fascial lines (anisotropy -> 1).
     gy, gx = np.gradient(g08)
-    jxx = gaussian_filter(gx * gx, sigma=3.4)
-    jyy = gaussian_filter(gy * gy, sigma=3.4)
-    jxy = gaussian_filter(gx * gy, sigma=3.4)
+    jxx = gaussian_filter(gx * gx, sigma=2.4)
+    jyy = gaussian_filter(gy * gy, sigma=2.4)
+    jxy = gaussian_filter(gx * gy, sigma=2.4)
 
     trace = jxx + jyy
     det_diff = np.hypot(jxx - jyy, 2.0 * jxy)
     anisotropy = det_diff / (trace + 1e-4)
 
-    # Macro gradient at scale 3.9 (true organ/disc boundaries, immune to speckle)
+    # Macro gradient (true organ/disc boundaries, immune to speckle)
     gy40, gx40 = np.gradient(g40)
     grad40 = np.hypot(gx40, gy40)
     p85_g40 = max(float(np.percentile(grad40, 85.0)), 1e-4)
@@ -210,20 +209,19 @@ def structure_tensor_tangent_restore(
         return g08[sy, sx]
 
     v_tangent = (
-        0.38 * g08
-        + 0.21 * (sample_at(1.3) + sample_at(-1.3))
-        + 0.10 * (sample_at(2.6) + sample_at(-2.6))
+        0.50 * g08
+        + 0.18 * (sample_at(1.0) + sample_at(-1.0))
+        + 0.07 * (sample_at(2.0) + sample_at(-2.0))
     )
 
-    # Homogeneous tissue interior (wipes out wide 4-7px Rician mottling in muscle & marrow)
-    diff_wide = np.abs(g40 - g72)
-    w_wide = np.exp(-((diff_wide / 0.065) ** 2)) * ((1.0 - struct_gate) ** 1.5)
-    v_flat_multi = g40 * (1.0 - 0.65 * w_wide) + g72 * (0.65 * w_wide)
-    v_interior = (1.0 - 0.62 * strength) * nlm_clean + (0.62 * strength) * v_flat_multi
+    # Homogeneous tissue interior (anisotropic bilateral smoothing around NLM to suppress mottled clumps without blurring)
+    diff_g14 = np.abs(nlm_clean - g14)
+    w_g14 = np.exp(-((diff_g14 / max(1.5 * sigma, 0.03)) ** 2)) * ((1.0 - struct_gate) ** 1.5)
+    v_interior = nlm_clean * (1.0 - 0.35 * strength * w_g14) + g14 * (0.35 * strength * w_g14)
 
     # Coherent edge restoration (tangent-smoothed curve + subtle deblur normal to edge, clamped to prevent halos)
-    deblur_delta = np.clip(v_tangent - g18, -0.045, 0.045)
-    v_edge = v_tangent + deblur_delta * (0.48 * float(strength))
+    deblur_delta = np.clip(v_tangent - g14, -0.025, 0.025)
+    v_edge = 0.72 * nlm_clean + 0.28 * (v_tangent + deblur_delta * (0.25 * float(strength)))
 
     out = v_interior * (1.0 - struct_gate) + v_edge * struct_gate
     out = np.clip(out, 0.0, 1.0)

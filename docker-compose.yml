@@ -19,7 +19,6 @@ services:
       ENHANC_PREFIX: "${ENHANC_PREFIX:-ENHANC-}"
       OHIF_PUBLIC_URL: "${OHIF_PUBLIC_URL:-/ohif/viewer}"
       APP_DB: "/var/lib/enhancer/enhancer.sqlite3"
-      GEMINI_API_KEY: "${GEMINI_API_KEY}"
     volumes:
       - enhancer-data:/var/lib/enhancer
       - ./datasets:/datasets:ro

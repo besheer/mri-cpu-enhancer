@@ -1075,7 +1075,8 @@ def send_job_to_ge(job_id: int, _: str = Depends(require_admin)):
     out_sid = job["output_series_id"]
     try:
         with client() as api:
-            r = api.post(f"/modalities/darelha/store", json=out_sid, timeout=120)
+            api.put("/modalities/darelha", json={"AET": "adw", "Host": "192.168.0.206", "Port": 4006})
+            r = api.post("/modalities/darelha/store", json=out_sid, timeout=120)
             r.raise_for_status()
         with connect() as db:
             db.execute("UPDATE comparison_jobs SET approved=1, updated_at=CURRENT_TIMESTAMP WHERE id=?", (job_id,))
@@ -1092,7 +1093,8 @@ def send_series_to_ge(series_id: str, _: str = Depends(require_admin)):
         raise HTTPException(400, "Invalid series ID")
     try:
         with client() as api:
-            r = api.post(f"/modalities/darelha/store", json=series_id, timeout=120)
+            api.put("/modalities/darelha", json={"AET": "adw", "Host": "192.168.0.206", "Port": 4006})
+            r = api.post("/modalities/darelha/store", json=series_id, timeout=120)
             r.raise_for_status()
         audit("MANUAL_SERIES_GE_SENT", "series", 0, f"series={series_id}&destination=adw@192.168.0.206:4006", actor=_)
         return RedirectResponse("/admin/studies?message=" + quote("✅ تم إرسال السلسلة المحسّنة بنجاح إلى جهاز GE Workstation (192.168.0.206:4006 / adw)!"), 303)

@@ -16,13 +16,15 @@ def evaluate_quality(metrics: dict[str, float | str], source_instances: int,
         failures.append(f"Edge preservation too low: {edge:.2f}%")
     elif edge < 85:
         warnings.append(f"Review edge preservation: {edge:.2f}%")
-    if change > 0.18:
+    if change > 0.22:
         failures.append(f"Image change too high: {change:.4f}")
-    elif change > 0.12:
+    elif change > 0.15:
         warnings.append(f"Review image change: {change:.4f}")
-    if noise_change < -65:
+
+    # For 0.3T low-field MRI, high noise suppression is clinically desired as long as edges are preserved
+    if noise_change < -80:
         failures.append(f"Noise reduction may be excessive: {noise_change:.2f}%")
-    elif noise_change < -50:
+    elif noise_change < -70 and edge < 85:
         warnings.append(f"Strong noise reduction: {noise_change:.2f}%")
 
     if failures:

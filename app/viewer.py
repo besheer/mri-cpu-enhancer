@@ -11,7 +11,7 @@ from urllib.parse import quote
 import httpx
 import numpy as np
 import pydicom
-from fastapi import APIRouter, Depends, Form, HTTPException
+from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 
 from app.admin import esc, layout, require_admin
@@ -714,8 +714,54 @@ function syncBar(){const n=checks().length;count.textContent=n;bar.hidden=!n;}
 document.querySelectorAll('.series-check').forEach(c=>c.addEventListener('change',syncBar));
 document.querySelectorAll('.select-study').forEach(b=>b.addEventListener('click',()=>{const boxes=[...b.closest('.study-card').querySelectorAll('.series-check:not(:disabled)')];const next=boxes.some(c=>!c.checked);boxes.forEach(c=>c.checked=next);syncBar();}));
 document.getElementById('clear-selection').addEventListener('click',()=>{checks().forEach(c=>c.checked=false);syncBar();});
-document.querySelectorAll('.enqueue-form').forEach(form=>form.addEventListener('submit',async event=>{event.preventDefault();const button=form.querySelector('button');button.disabled=true;try{const response=await fetch(form.action,{method:'POST',body:new FormData(form),headers:{'X-Requested-With':'fetch'}});const data=await response.json();if(!response.ok)throw new Error(data.detail||'Failed to enqueue job');button.textContent='Queued ✓';showToast(`Job #${data.job_id} added to processing queue`);setTimeout(()=>location.reload(),1800);}catch(error){showToast(error.message,true);}finally{button.disabled=false;}}));
-document.querySelectorAll('.ai-quick-form').forEach(form=>form.addEventListener('submit',async event=>{event.preventDefault();const button=form.querySelector('button');button.disabled=true;button.textContent='⏳ Enhancing...';try{const response=await fetch(form.action,{method:'POST',headers:{'X-Requested-With':'fetch'}});const data=await response.json();if(!response.ok)throw new Error(data.detail||'Failed to start RAD4AI');button.textContent='✓ Queued!';showToast(`⚡ RAD4AI enhancement started (Job #${data.job_id})...`);setTimeout(()=>location.reload(),2200);}catch(error){showToast(error.message,true);button.textContent='⚡ Instant RAD4AI Enhance';}finally{button.disabled=false;}}));
+// Delegated event listener for instant enhancement forms
+document.addEventListener('submit', async function(event) {
+    const form = event.target;
+    if (form.classList.contains('ai-quick-form')) {
+        event.preventDefault();
+        const button = form.querySelector('button');
+        if (button) {
+            button.disabled = true;
+            button.textContent = '⏳ Enhancing...';
+        }
+        try {
+            const response = await fetch(form.action, {
+                method: 'POST',
+                headers: { 'X-Requested-With': 'fetch' }
+            });
+            const data = await response.json();
+            if (!response.ok) throw new Error(data.detail || 'Failed to start RAD4AI');
+            if (button) button.textContent = '✓ Queued!';
+            showToast(`⚡ RAD4AI enhancement started (Job #${data.job_id})...`);
+            setTimeout(() => location.reload(), 2000);
+        } catch (error) {
+            showToast(error.message, true);
+            if (button) button.textContent = '⚡ Instant RAD4AI Pro';
+        } finally {
+            if (button) button.disabled = false;
+        }
+    } else if (form.classList.contains('enqueue-form')) {
+        event.preventDefault();
+        const button = form.querySelector('button');
+        if (button) button.disabled = true;
+        try {
+            const response = await fetch(form.action, {
+                method: 'POST',
+                body: new FormData(form),
+                headers: { 'X-Requested-With': 'fetch' }
+            });
+            const data = await response.json();
+            if (!response.ok) throw new Error(data.detail || 'Failed to enqueue job');
+            if (button) button.textContent = 'Queued ✓';
+            showToast(`Job #${data.job_id} added to processing queue`);
+            setTimeout(() => location.reload(), 1800);
+        } catch (error) {
+            showToast(error.message, true);
+        } finally {
+            if (button) button.disabled = false;
+        }
+    }
+});
 document.getElementById('bulk-delete')?.addEventListener('click',async()=>{
     const selected=checks();
     if(!selected.length){showToast('Please select at least one series to delete', true); return;}
@@ -1201,7 +1247,7 @@ def interactive_compare(job_id: int, message: str = "", error: str = "", _: str 
 
 
 @router.post("/series/{series_id}/ai-swift")
-def quick_ai_swift(series_id: str, _: str = Depends(require_admin)):
+def quick_ai_swift(series_id: str, request: Request, _: str = Depends(require_admin)):
     if not ORTHANC_ID.fullmatch(series_id):
         raise HTTPException(400, "Invalid Orthanc series ID")
     try:
@@ -1217,11 +1263,13 @@ def quick_ai_swift(series_id: str, _: str = Depends(require_admin)):
     except (httpx.HTTPError, ValueError) as exc:
         raise HTTPException(422, str(exc)) from exc
     job_id = enqueue_comparison(series_id, chosen_profile, "MEDIUM")
-    return JSONResponse({"ok": True, "job_id": job_id})
+    if request.headers.get("x-requested-with") == "fetch" or "application/json" in request.headers.get("accept", ""):
+        return JSONResponse({"ok": True, "job_id": job_id})
+    return RedirectResponse(f"/admin/studies?message=" + quote(f"⚡ تم بدء تحسين السلسلة بنجاح بالذكاء الاصطناعي (Job #{job_id})!"), 303)
 
 
 @router.post("/series/{series_id}/enqueue")
-def enqueue(series_id: str, profile: str = Form(...), strength: str = Form("MILD"), acknowledged: str | None = Form(None), _: str = Depends(require_admin)):
+def enqueue(series_id: str, request: Request, profile: str = Form(...), strength: str = Form("MILD"), acknowledged: str | None = Form(None), _: str = Depends(require_admin)):
     if not ORTHANC_ID.fullmatch(series_id):
         raise HTTPException(400, "Invalid Orthanc series ID")
     if profile not in PROFILES or profile not in enabled_profile_names():
@@ -1240,7 +1288,9 @@ def enqueue(series_id: str, profile: str = Form(...), strength: str = Form("MILD
     except (httpx.HTTPError, ValueError) as exc:
         raise HTTPException(422, str(exc)) from exc
     job_id = enqueue_comparison(series_id, profile, strength)
-    return JSONResponse({"ok": True, "job_id": job_id})
+    if request.headers.get("x-requested-with") == "fetch" or "application/json" in request.headers.get("accept", ""):
+        return JSONResponse({"ok": True, "job_id": job_id})
+    return RedirectResponse(f"/admin/studies?message=" + quote(f"⚡ تمت إضافة السلسلة لطابور المعالجة بنجاح (Job #{job_id})!"), 303)
 
 
 @router.post("/series/{series_id}/safe-preset")

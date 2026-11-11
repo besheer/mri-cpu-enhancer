@@ -75,15 +75,19 @@ def test_rejects_non_mr() -> None:
 def test_description_is_prefixed_and_limited() -> None:
     result = derived_series_description("A" * 100)
     assert result.startswith("ENHANC-")
+    assert result.endswith("[ENHANCED]")
     assert len(result) == 64
 
 
 def test_derived_series_is_detected() -> None:
     desc = derived_series_description("AX T2", "ENHANC-RNLM-")
     assert desc.startswith("ENHANC-")
+    assert desc.endswith("[RAD4AI-RNLM]")
     assert is_derived_series(desc) is True
     for profile_key, prefix in PREFIXES.items():
         d = derived_series_description(f"SAG T2 {profile_key}", prefix)
         assert d.startswith("ENHANC-")
         assert is_derived_series(d) is True
     assert is_derived_series("AX T2 FSE") is False
+    assert is_derived_series("ENH STIR") is False
+    assert is_derived_series("ENH AX T2 [ENHANCED]") is True

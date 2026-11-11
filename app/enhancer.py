@@ -53,47 +53,33 @@ def conservative_baseline(image: np.ndarray) -> np.ndarray:
     return np.rint(np.clip(denoised, info.min, info.max)).astype(image.dtype)
 
 
+DERIVED_TAGS = (
+    "[AI-SWIFT]",
+    "[RAD4AI]",
+    "[RAD4AI-RNLM]",
+    "[RAD4AI-3THD]",
+    "[RAD4AI-PRINT]",
+    "[RAD4AI-PRO]",
+    "[RAD4AI-1.5T]",
+    "[RAD4AI-GE-AW]",
+    "[ENHANCED]",
+)
+
+
 def is_derived_series(description: str) -> bool:
     u = (description or "").upper().strip()
-    return (
-        u.startswith("ENHANC-")
-        or u.startswith("ENH ")
-        or any(
-            tag in u
-            for tag in (
-                "[AI-SWIFT]",
-                "[RAD4AI]",
-                "[RAD4AI-RNLM]",
-                "[RAD4AI-3THD]",
-                "[RAD4AI-PRINT]",
-                "[RAD4AI-PRO]",
-                "[RAD4AI-1.5T]",
-                "[RAD4AI-GE-AW]",
-                "[ENHANCED]",
-            )
-        )
-    )
+    has_tag = any(tag in u for tag in DERIVED_TAGS)
+    return u.startswith("ENHANC-") or has_tag
 
 
 def derived_series_description(original: str, prefix: str = DEFAULT_PREFIX) -> str:
     orig = original.strip() or "MR SERIES"
-    for old_tag in (
-        "[RAD4AI-RNLM]",
-        "[RAD4AI-3THD]",
-        "[RAD4AI-PRINT]",
-        "[RAD4AI-GE-AW]",
-        "[RAD4AI-1.5T]",
-        "[RAD4AI-PRO]",
-        "[RAD4AI]",
-        "[ENHANCED]",
-        "[AI-SWIFT]",
-    ):
+    for old_tag in DERIVED_TAGS:
         orig = orig.replace(old_tag, "").strip()
     if orig.upper().startswith("ENHANC-"):
         orig = orig[7:].strip()
-    elif orig.upper().startswith("ENH "):
+    elif orig.upper().startswith("ENH ") and any(tag in original.upper() for tag in DERIVED_TAGS):
         orig = orig[4:].strip()
-    orig = f"ENHANC-{orig}"
     if "RNLM" in prefix:
         tag = "[RAD4AI-RNLM]"
     elif "3THD" in prefix:
@@ -110,7 +96,9 @@ def derived_series_description(original: str, prefix: str = DEFAULT_PREFIX) -> s
         tag = "[RAD4AI]"
     else:
         tag = "[ENHANCED]"
-    return f"{orig} {tag}"[:64]
+    max_orig_len = max(1, 64 - len("ENHANC-") - 1 - len(tag))
+    clipped_orig = orig[:max_orig_len].rstrip()
+    return f"ENHANC-{clipped_orig} {tag}"
 
 
 def enhance_dataset(

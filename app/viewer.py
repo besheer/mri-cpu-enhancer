@@ -499,10 +499,109 @@ function setAnatomyFilter(btn) {
     filterStudies();
 }
 
+// Arabic-to-English Medical & Names Dictionary for Instant Search
+const AR_DICTIONARY = {
+    'مخ': ['brain', 'head'],
+    'راس': ['brain', 'head'],
+    'رأس': ['brain', 'head'],
+    'دماغ': ['brain', 'head'],
+    'فقرات': ['spine', 'lss', 'cxs', 'lumbar', 'cervical', 'dorsal'],
+    'ظهر': ['spine', 'lumbar', 'lss'],
+    'رقبة': ['cervical', 'cxs', 'spine'],
+    'رقبه': ['cervical', 'cxs', 'spine'],
+    'عنقية': ['cervical', 'cxs'],
+    'عنقيه': ['cervical', 'cxs'],
+    'قطنية': ['lumbar', 'lss'],
+    'قطنيه': ['lumbar', 'lss'],
+    'ركبة': ['knee'],
+    'ركبه': ['knee'],
+    'كتف': ['shoulder'],
+    'حوض': ['pelvis'],
+    'فخذ': ['femur', 'hip'],
+    'كاحل': ['ankle'],
+    'قدم': ['foot'],
+    'شرايين': ['mra', 'mrv'],
+    'اورده': ['mrv'],
+    'أوردة': ['mrv'],
+    // Common Egyptian Patient Names
+    'احمد': ['ahmed', 'ahmad'],
+    'أحمد': ['ahmed', 'ahmad'],
+    'محمد': ['mohamed', 'mohammed', 'muhammad', 'mohd'],
+    'محمود': ['mahmoud', 'mahmood'],
+    'ابراهيم': ['ibrahim'],
+    'إبراهيم': ['ibrahim'],
+    'يوسف': ['yousef', 'youssef', 'yosef'],
+    'جمالات': ['gmalat', 'gamalat'],
+    'هاني': ['hany', 'hani'],
+    'علي': ['ali'],
+    'على': ['ali'],
+    'حسن': ['hassan', 'hasan'],
+    'حسين': ['hussein', 'hussien'],
+    'خالد': ['khaled', 'khalid'],
+    'منسي': ['mansy', 'elmansy'],
+    'المنسي': ['elmansy', 'mansy'],
+    'خضر': ['khadr', 'khader'],
+    'هشام': ['hesham', 'hisham'],
+    'عبدالعزيز': ['abdalaziz', 'abdelaziz', 'aziz'],
+    'عبد العزيز': ['abdalaziz', 'abdelaziz', 'aziz'],
+    'طارق': ['tarek', 'tareq'],
+    'مصطفى': ['mostafa', 'mustafa'],
+    'سعيد': ['saeed', 'said'],
+    'عادل': ['adel'],
+    'عمر': ['omar'],
+    'عمرو': ['amr'],
+    'ايمن': ['ayman'],
+    'أيمن': ['ayman'],
+    'اشرف': ['ashraf'],
+    'أشرف': ['ashraf'],
+    'سامح': ['sameh'],
+    'وليد': ['waleed', 'walid'],
+    'ياسر': ['yasser', 'yasir']
+};
+
+const AR_CHAR_MAP = {
+    'ا': 'a', 'أ': 'a', 'إ': 'a', 'آ': 'a', 'ء': 'a',
+    'ب': 'b', 'ت': 't', 'ث': 's', 'ج': 'g', 'ح': 'h',
+    'خ': 'kh', 'د': 'd', 'ذ': 'z', 'ر': 'r', 'ز': 'z',
+    'س': 's', 'ش': 'sh', 'ص': 's', 'ض': 'd', 'ط': 't',
+    'ظ': 'z', 'ع': 'a', 'غ': 'gh', 'ف': 'f', 'ق': 'k',
+    'ك': 'k', 'ل': 'l', 'م': 'm', 'ن': 'n', 'ه': 'h',
+    'و': 'o', 'ي': 'y', 'ى': 'a', 'ة': 'a'
+};
+
+function normalizeArabic(txt) {
+    return txt.replace(/[أإآ]/g, 'ا').replace(/ة/g, 'ه').replace(/ى/g, 'ي').trim();
+}
+
+function transliterateArabic(txt) {
+    let s = normalizeArabic(txt);
+    let out = '';
+    for (let i = 0; i < s.length; i++) {
+        out += AR_CHAR_MAP[s[i]] || s[i];
+    }
+    return out;
+}
+
 function filterStudies() {
-    const query = (document.getElementById('study-search-input')?.value || '').trim().toLowerCase();
+    const rawQuery = (document.getElementById('study-search-input')?.value || '').trim();
+    const query = rawQuery.toLowerCase();
     const clearBtn = document.getElementById('clear-search-btn');
     if (clearBtn) clearBtn.style.display = query ? 'block' : 'none';
+
+    // Build candidate search terms (original + Arabic synonyms + transliterated)
+    let candidateTerms = [query];
+    const normQ = normalizeArabic(query);
+    if (normQ !== query) candidateTerms.push(normQ);
+
+    // Check Arabic dictionary
+    for (const [arKey, enTerms] of Object.entries(AR_DICTIONARY)) {
+        if (normQ.includes(normalizeArabic(arKey))) {
+            candidateTerms.push(...enTerms);
+        }
+    }
+    // Phonetic transliteration
+    const trans = transliterateArabic(query);
+    if (trans && trans !== query) candidateTerms.push(trans);
 
     const cards = document.querySelectorAll('.study-card');
     let visibleCount = 0;
@@ -512,11 +611,25 @@ function filterStudies() {
         const pId = (card.dataset.patientId || '').toLowerCase();
         const pDesc = (card.dataset.desc || '').toLowerCase();
         const pDate = (card.dataset.date || '').toLowerCase();
+        const pRawDate = (card.dataset.rawDate || '').toLowerCase();
         const pAnatomy = (card.dataset.anatomy || 'other').toLowerCase();
         const enhancedCount = parseInt(card.dataset.enhanced || '0', 10);
+        
+        // Full text of card (includes patient, ID, study desc, series names, etc.)
+        const fullCardText = (card.textContent || '').toLowerCase();
 
-        // 1. Search Query Match
-        const matchesQuery = !query || pName.includes(query) || pId.includes(query) || pDesc.includes(query) || pDate.includes(query);
+        // 1. Smart Query Match
+        let matchesQuery = !query;
+        if (query) {
+            for (const term of candidateTerms) {
+                if (!term) continue;
+                if (pName.includes(term) || pId.includes(term) || pDesc.includes(term) ||
+                    pDate.includes(term) || pRawDate.includes(term) || fullCardText.includes(term)) {
+                    matchesQuery = true;
+                    break;
+                }
+            }
+        }
 
         // 2. Status Match
         let matchesStatus = true;
@@ -645,7 +758,7 @@ document.getElementById('bulk-enqueue').addEventListener('click',async()=>{const
   <div style='display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-bottom:12px'>
     <div style='flex:1;min-width:280px;position:relative'>
       <span style='position:absolute;left:14px;top:50%;transform:translateY(-50%);font-size:16px;color:#94a3b8'>🔍</span>
-      <input type='text' id='study-search-input' placeholder='Search Patient Name, ID, Study or Anatomy (e.g. Brain, Spine, 7339)...' 
+      <input type='text' id='study-search-input' placeholder='🔍 اكتب اسم المريض بالعربي أو الإنجليزي، أو رقم الفحص، أو نوع العضو (مثال: أحمد، جمالات، مخ، فقرات، 7339)...' 
              style='width:100%;padding:10px 38px 10px 40px;border-radius:8px;border:1px solid #475569;background:#0b1329;color:#f8fafc;font-size:14px;outline:none'
              oninput='filterStudies()'>
       <button type='button' id='clear-search-btn' onclick="document.getElementById('study-search-input').value='';filterStudies();" 

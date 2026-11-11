@@ -53,28 +53,63 @@ def conservative_baseline(image: np.ndarray) -> np.ndarray:
     return np.rint(np.clip(denoised, info.min, info.max)).astype(image.dtype)
 
 
+def is_derived_series(description: str) -> bool:
+    u = (description or "").upper().strip()
+    return (
+        u.startswith("ENHANC-")
+        or u.startswith("ENH ")
+        or any(
+            tag in u
+            for tag in (
+                "[AI-SWIFT]",
+                "[RAD4AI]",
+                "[RAD4AI-RNLM]",
+                "[RAD4AI-3THD]",
+                "[RAD4AI-PRINT]",
+                "[RAD4AI-PRO]",
+                "[RAD4AI-1.5T]",
+                "[RAD4AI-GE-AW]",
+                "[ENHANCED]",
+            )
+        )
+    )
+
+
 def derived_series_description(original: str, prefix: str = DEFAULT_PREFIX) -> str:
-    orig = original.strip() or 'MR SERIES'
-    for old_tag in ('[RAD4AI-RNLM]', '[RAD4AI-3THD]', '[RAD4AI-PRINT]', '[RAD4AI-GE-AW]', '[RAD4AI-1.5T]', '[RAD4AI-PRO]', '[RAD4AI]', '[ENHANCED]', '[AI-SWIFT]'):
-        orig = orig.replace(old_tag, '').strip()
-    if not orig.upper().startswith('ENH'):
-        orig = f"ENH {orig}"
-    if 'RNLM' in prefix:
-        tag = '[RAD4AI-RNLM]'
-    elif '3THD' in prefix:
-        tag = '[RAD4AI-3THD]'
-    elif 'PRINT' in prefix:
-        tag = '[RAD4AI-PRINT]'
-    elif 'GEAW' in prefix:
-        tag = '[RAD4AI-GE-AW]'
-    elif 'SR' in prefix:
-        tag = '[RAD4AI-1.5T]'
-    elif 'PRO' in prefix:
-        tag = '[RAD4AI-PRO]'
-    elif 'AISWIFT' in prefix or 'RAD4AI' in prefix:
-        tag = '[RAD4AI]'
+    orig = original.strip() or "MR SERIES"
+    for old_tag in (
+        "[RAD4AI-RNLM]",
+        "[RAD4AI-3THD]",
+        "[RAD4AI-PRINT]",
+        "[RAD4AI-GE-AW]",
+        "[RAD4AI-1.5T]",
+        "[RAD4AI-PRO]",
+        "[RAD4AI]",
+        "[ENHANCED]",
+        "[AI-SWIFT]",
+    ):
+        orig = orig.replace(old_tag, "").strip()
+    if orig.upper().startswith("ENHANC-"):
+        orig = orig[7:].strip()
+    elif orig.upper().startswith("ENH "):
+        orig = orig[4:].strip()
+    orig = f"ENHANC-{orig}"
+    if "RNLM" in prefix:
+        tag = "[RAD4AI-RNLM]"
+    elif "3THD" in prefix:
+        tag = "[RAD4AI-3THD]"
+    elif "PRINT" in prefix:
+        tag = "[RAD4AI-PRINT]"
+    elif "GEAW" in prefix:
+        tag = "[RAD4AI-GE-AW]"
+    elif "SR" in prefix:
+        tag = "[RAD4AI-1.5T]"
+    elif "PRO" in prefix:
+        tag = "[RAD4AI-PRO]"
+    elif "AISWIFT" in prefix or "RAD4AI" in prefix:
+        tag = "[RAD4AI]"
     else:
-        tag = '[ENHANCED]'
+        tag = "[ENHANCED]"
     return f"{orig} {tag}"[:64]
 
 

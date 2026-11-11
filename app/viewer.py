@@ -15,6 +15,7 @@ from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 
 from app.admin import esc, layout, require_admin
+from app.enhancer import is_derived_series
 from app.profiles import PROFILE_INFO, PROFILES, STRENGTHS, recommendation, validate_selection
 from app.store import (audit, connect, enabled_profile_names, enqueue_comparison,
                        enqueue_return, get_center_by_aet, get_comparison_job,
@@ -33,11 +34,6 @@ def source_center(api: httpx.Client, series_id: str):
 
 router = APIRouter(prefix="/admin", tags=["viewer"])
 ORTHANC_ID = re.compile(r"^[0-9a-f]{8}(?:-[0-9a-f]{8}){4}$")
-
-
-def is_derived_series(description: str) -> bool:
-    u = description.upper()
-    return u.startswith("ENH") or "[AI-SWIFT]" in u or "[RAD4AI]" in u or "[RAD4AI-PRO]" in u or "[RAD4AI-1.5T]" in u or "[RAD4AI-GE-AW]" in u or "[ENHANCED]" in u
 
 
 def client() -> httpx.Client:

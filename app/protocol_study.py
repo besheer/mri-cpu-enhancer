@@ -12,6 +12,7 @@ from fastapi import APIRouter, Depends, Form, HTTPException
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 
 from app.admin import esc, layout, require_admin
+from app.enhancer import is_derived_series
 from app.profiles import PROFILE_INFO, PROFILES, STRENGTHS, validate_selection
 from app.store import audit, connect, enabled_profile_names, list_centers
 
@@ -63,7 +64,7 @@ def series_catalog() -> list[dict[str, object]]:
                 item = item_response.json()
                 tags = item.get("MainDicomTags", {})
                 description = str(tags.get("SeriesDescription", "Unnamed series"))
-                if description.upper().startswith("ENHANC"):
+                if is_derived_series(description):
                     continue
                 result.append({
                     "id": series_id,
@@ -86,7 +87,7 @@ def checked_series(api: httpx.Client, series_id: str) -> dict[str, object]:
     response.raise_for_status()
     item = response.json()
     description = str(item.get("MainDicomTags", {}).get("SeriesDescription", ""))
-    if description.upper().startswith("ENHANC"):
+    if is_derived_series(description):
         raise ValueError("Protocol inputs must be original, non-ENHANC series")
     study = api.get(f"/studies/{item['ParentStudy']}")
     study.raise_for_status()

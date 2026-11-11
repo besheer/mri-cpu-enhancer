@@ -12,7 +12,7 @@ import httpx
 import pydicom
 from pydicom.uid import generate_uid
 
-from app.enhancer import derived_series_description, enhance_dataset
+from app.enhancer import derived_series_description, enhance_dataset, is_derived_series
 from app.store import connect, get_center_by_aet
 
 log = logging.getLogger("mri-worker")
@@ -82,7 +82,7 @@ class AutoProcessor:
                 description = str(tags.get("SeriesDescription", ""))
                 if not series.get("IsStable", False) or self._handled(sid):
                     continue
-                if tags.get("Modality") != "MR" or description.upper().startswith("ENHANC"):
+                if tags.get("Modality") != "MR" or is_derived_series(description):
                     self._mark(sid, "skipped")
                     continue
                 instances = series.get("Instances", [])

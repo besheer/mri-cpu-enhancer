@@ -150,18 +150,21 @@ def structure_tensor_tangent_restore(
     dark_gate = np.clip((0.42 - a) / 0.35, 0.0, 1.0)
     work = a * (1.0 - 0.65 * dark_gate) + work * (0.65 * dark_gate)
 
-    # 2. Multi-scale Gaussian pyramid & Guide for Vectorized NLM
+    # 2. Multi-scale Gaussian pyramid & Adaptive Guide for Vectorized NLM
     g08 = gaussian_filter(work, sigma=0.65)
     g14 = gaussian_filter(work, sigma=1.15)
     g40 = gaussian_filter(work, sigma=2.80)
 
+    # Adaptive NLM: use patch_radius=2 on high-noise 0.3T scans (sigma >= 0.032) and patch_radius=1 on lower noise
+    pr = 2 if sigma >= 0.032 else 1
+    nlm_guide = g14 if sigma >= 0.038 else g08
     nlm_clean = non_local_means(
         work,
         sigma=max(sigma, 0.02),
-        patch_radius=1,
+        patch_radius=pr,
         search_radius=3,
         h_factor=0.75 + 0.30 * float(strength),
-        guide=g08,
+        guide=nlm_guide,
     )
 
     # 3. Structure Tensor (Jxx, Jxy, Jyy) integrated at scale rho=2.4

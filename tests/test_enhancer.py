@@ -7,7 +7,13 @@ import pytest
 from pydicom.dataset import FileDataset, FileMetaDataset
 from pydicom.uid import ExplicitVRLittleEndian, MRImageStorage, generate_uid
 
-from app.enhancer import UnsupportedDicom, derived_series_description, enhance_dataset
+from app.enhancer import (
+    UnsupportedDicom,
+    derived_series_description,
+    enhance_dataset,
+    is_derived_series,
+)
+from app.profiles import PREFIXES
 
 
 def synthetic_mr(modality: str = "MR") -> FileDataset:
@@ -46,7 +52,9 @@ def test_creates_distinct_research_series() -> None:
 
     assert output.SeriesInstanceUID == target_series
     assert output.SOPInstanceUID != original_uid
-    assert output.SeriesDescription == "ENH Synthetic 0.3T Test [ENHANCED]"
+    assert output.SeriesDescription == "ENHANC-Synthetic 0.3T Test [ENHANCED]"
+    assert output.SeriesDescription.startswith("ENHANC-")
+    assert is_derived_series(output.SeriesDescription) is True
     assert output.ImageType[0] == "DERIVED"
     assert source.SOPInstanceUID == original_uid
     assert output.pixel_array.shape == source.pixel_array.shape
@@ -66,5 +74,16 @@ def test_rejects_non_mr() -> None:
 
 def test_description_is_prefixed_and_limited() -> None:
     result = derived_series_description("A" * 100)
-    assert result.startswith("ENH ")
+    assert result.startswith("ENHANC-")
     assert len(result) == 64
+
+
+def test_derived_series_is_detected() -> None:
+    desc = derived_series_description("AX T2", "ENHANC-RNLM-")
+    assert desc.startswith("ENHANC-")
+    assert is_derived_series(desc) is True
+    for profile_key, prefix in PREFIXES.items():
+        d = derived_series_description(f"SAG T2 {profile_key}", prefix)
+        assert d.startswith("ENHANC-")
+        assert is_derived_series(d) is True
+    assert is_derived_series("AX T2 FSE") is False

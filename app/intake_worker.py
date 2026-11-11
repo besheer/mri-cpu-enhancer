@@ -6,6 +6,7 @@ import threading
 
 import httpx
 
+from app.enhancer import is_derived_series
 from app.profiles import PROFILES
 from app.store import audit, auto_eligible_profile_names, connect, enqueue_comparison, get_center_by_aet, setting
 
@@ -60,9 +61,7 @@ class IntakeWorker:
                 # and must never enter branch intake or automatic-return workflows.
                 u_desc = description.upper()
                 if (tags.get("Modality") != "MR"
-                        or u_desc.startswith("ENH")
-                        or "[RAD4AI" in u_desc
-                        or "[ENHANCED]" in u_desc
+                        or is_derived_series(description)
                         or u_desc.startswith("SYNTH-")):
                     continue
                 instances = series.get("Instances", [])

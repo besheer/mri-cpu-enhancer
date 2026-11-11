@@ -12,7 +12,7 @@ import numpy as np
 import pydicom
 from pydicom.uid import generate_uid
 
-from app.enhancer import derive_with_pixels, derived_series_description
+from app.enhancer import derive_with_pixels, derived_series_description, is_derived_series
 from app.profiles import PREFIXES, PROFILE_INFO, PROFILES, process_volume, validate_selection
 from app.quality import evaluate_quality
 from app.store import audit, auto_eligible_profile_names, connect, enabled_profile_names, enqueue_return, get_center_by_aet, setting
@@ -93,8 +93,7 @@ class ComparisonWorker:
             info.raise_for_status()
             tags = info.json().get("MainDicomTags", {})
             description = str(tags.get("SeriesDescription", "MR SERIES"))
-            u_desc = description.upper()
-            if tags.get("Modality") != "MR" or u_desc.startswith("ENH") or "[RAD4AI" in u_desc:
+            if tags.get("Modality") != "MR" or is_derived_series(description):
                 raise ValueError("Only original MR series can be processed")
             center = None
             instance_ids = info.json().get("Instances", [])

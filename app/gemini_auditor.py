@@ -17,10 +17,10 @@ ORTHANC_URL = os.getenv("ORTHANC_URL", "http://orthanc:8042").rstrip("/")
 ORTHANC_AUTH = (os.getenv("ORTHANC_USERNAME", "admin"), os.getenv("ORTHANC_PASSWORD", ""))
 
 CANDIDATE_MODELS = [
-    "gemini-3.5-flash",
-    "gemini-3.7-flash",
+    "gemini-2.5-flash",
+    "gemini-2.0-flash",
     "gemini-flash-latest",
-    "gemini-3.8-flash"
+    "gemini-1.5-flash",
 ]
 
 

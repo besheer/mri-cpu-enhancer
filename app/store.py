@@ -230,6 +230,7 @@ def initialize() -> None:
             "total_instances": "INTEGER NOT NULL DEFAULT 0",
             "processed_instances": "INTEGER NOT NULL DEFAULT 0",
             "archived": "INTEGER NOT NULL DEFAULT 0",
+            "gemini_audit": "TEXT NOT NULL DEFAULT ''",
         }
         for name, declaration in job_migrations.items():
             if name not in job_columns:

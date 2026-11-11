@@ -294,9 +294,9 @@ def studies(message: str = "", error: str = "", job_status: str = "", profile_fi
                 else:
                     anatomy_tag = "other"
 
-                p_name_val = esc(patient.get('PatientName','')) or 'Unknown patient'
-                p_id_val = esc(patient.get('PatientID',''))
-                s_desc_val = esc(main.get('StudyDescription',''))
+                p_name_raw = str(patient.get('PatientName', '') or 'Unknown patient')
+                p_id_raw = str(patient.get('PatientID', '') or '')
+                s_desc_raw = str(main.get('StudyDescription', '') or '')
                 raw_date = str(main.get('StudyDate','')).strip()
                 if len(raw_date) == 8 and raw_date.isdigit():
                     iso_date = f"{raw_date[:4]}-{raw_date[4:6]}-{raw_date[6:]}"
@@ -305,9 +305,9 @@ def studies(message: str = "", error: str = "", job_status: str = "", profile_fi
 
                 rows.append(
                     f"<details class='study-card' data-study='{esc(study.get('ID',''))}' "
-                    f"data-patient-name='{esc(p_name_val.lower())}' "
-                    f"data-patient-id='{esc(p_id_val.lower())}' "
-                    f"data-desc='{esc(s_desc_val.lower())}' "
+                    f"data-patient-name='{esc(p_name_raw.lower())}' "
+                    f"data-patient-id='{esc(p_id_raw.lower())}' "
+                    f"data-desc='{esc(s_desc_raw.lower())}' "
                     f"data-date='{esc(iso_date)}' "
                     f"data-raw-date='{esc(raw_date)}' "
                     f"data-enhanced='{enhanced_count}' "
@@ -381,8 +381,7 @@ def studies(message: str = "", error: str = "", job_status: str = "", profile_fi
                 "<label class='muted'><input id='bulk-ack' type='checkbox'> CLAHE/Strong Research Ack</label>"
                 "<button type='button' class='btn ai-btn' id='bulk-enqueue'>⚡ Enhance Selected Now</button>"
                 "<button type='button' class='btn gray' id='clear-selection'>Clear Selection</button><span id='bulk-status'></span></div>")
-    script = """<script>
-<style>
+    script = """<style>
 .filter-btn {
   padding: 6px 13px;
   font-size: 12px;
@@ -406,6 +405,7 @@ def studies(message: str = "", error: str = "", job_status: str = "", profile_fi
   box-shadow: 0 0 12px rgba(59,130,246,0.35);
 }
 </style>
+<script>
 let currentStatusFilter = 'all';
 let currentAnatomyFilter = 'all';
 let currentDateFilter = 'all';
@@ -643,7 +643,6 @@ function filterStudies() {
         }
 
         // 4. Date Match
-        const pRawDate = card.dataset.rawDate || '';
         const matchesDate = checkDateMatch(pDate, pRawDate);
 
         if (matchesQuery && matchesStatus && matchesAnatomy && matchesDate) {

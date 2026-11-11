@@ -280,8 +280,33 @@ def studies(message: str = "", error: str = "", job_status: str = "", profile_fi
                         f"<div class='series-grid'>{''.join(derived_cells)}</div></div>"
                     )
 
+                # Detect Anatomy Category for quick filter
+                full_study_text = f"{esc(main.get('StudyDescription',''))} {esc(patient.get('PatientName',''))} " + " ".join(s.get('MainDicomTags',{}).get('SeriesDescription','') for s in study_series)
+                text_lower = full_study_text.lower()
+                if any(k in text_lower for k in ["brain", "head", "mrv", "mra", "flair"]):
+                    anatomy_tag = "brain"
+                elif any(k in text_lower for k in ["spine", "lumbar", "cervical", "lss", "dorsal", "vert", "cxs"]):
+                    anatomy_tag = "spine"
+                elif any(k in text_lower for k in ["knee", "kne"]):
+                    anatomy_tag = "knee"
+                elif any(k in text_lower for k in ["shoulder", "shoul", "arm"]):
+                    anatomy_tag = "shoulder"
+                else:
+                    anatomy_tag = "other"
+
+                p_name_val = esc(patient.get('PatientName','')) or 'Unknown patient'
+                p_id_val = esc(patient.get('PatientID',''))
+                s_desc_val = esc(main.get('StudyDescription',''))
+                s_date_val = esc(main.get('StudyDate',''))
+
                 rows.append(
-                    f"<details class='study-card' data-study='{esc(study.get('ID',''))}' {open_attr}>"
+                    f"<details class='study-card' data-study='{esc(study.get('ID',''))}' "
+                    f"data-patient-name='{esc(p_name_val.lower())}' "
+                    f"data-patient-id='{esc(p_id_val.lower())}' "
+                    f"data-desc='{esc(s_desc_val.lower())}' "
+                    f"data-date='{esc(s_date_val)}' "
+                    f"data-enhanced='{enhanced_count}' "
+                    f"data-anatomy='{anatomy_tag}' {open_attr}>"
                     f"<summary style='display:flex;align-items:center;gap:12px'>"
                     f"<input class='study-check' type='checkbox' value='{esc(study.get('ID',''))}' title='Select Case' style='width:22px;height:22px;accent-color:#ef4444;cursor:pointer' onclick='event.stopPropagation()'>"
                     f"{thumb}<div style='flex:1'><b style='font-size:16px'>{esc(patient.get('PatientName','')) or 'Unknown patient'}</b> — "
@@ -352,6 +377,92 @@ def studies(message: str = "", error: str = "", job_status: str = "", profile_fi
                 "<button type='button' class='btn ai-btn' id='bulk-enqueue'>⚡ Enhance Selected Now</button>"
                 "<button type='button' class='btn gray' id='clear-selection'>Clear Selection</button><span id='bulk-status'></span></div>")
     script = """<script>
+<style>
+.filter-btn {
+  padding: 6px 13px;
+  font-size: 12px;
+  font-weight: 700;
+  border-radius: 7px;
+  border: 1px solid #334155;
+  background: #1e293b;
+  color: #cbd5e1;
+  cursor: pointer;
+  transition: all .15s ease;
+}
+.filter-btn:hover {
+  background: #334155;
+  color: #fff;
+  border-color: #475569;
+}
+.filter-btn.active {
+  background: linear-gradient(135deg, #2563eb, #3b82f6);
+  border-color: #60a5fa;
+  color: #fff;
+  box-shadow: 0 0 12px rgba(59,130,246,0.35);
+}
+</style>
+let currentStatusFilter = 'all';
+let currentAnatomyFilter = 'all';
+
+function setStatusFilter(btn) {
+    document.querySelectorAll('.status-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    currentStatusFilter = btn.dataset.status;
+    filterStudies();
+}
+
+function setAnatomyFilter(btn) {
+    document.querySelectorAll('.anatomy-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    currentAnatomyFilter = btn.dataset.anatomy;
+    filterStudies();
+}
+
+function filterStudies() {
+    const query = (document.getElementById('study-search-input')?.value || '').trim().toLowerCase();
+    const clearBtn = document.getElementById('clear-search-btn');
+    if (clearBtn) clearBtn.style.display = query ? 'block' : 'none';
+
+    const cards = document.querySelectorAll('.study-card');
+    let visibleCount = 0;
+
+    cards.forEach(card => {
+        const pName = (card.dataset.patientName || '').toLowerCase();
+        const pId = (card.dataset.patientId || '').toLowerCase();
+        const pDesc = (card.dataset.desc || '').toLowerCase();
+        const pDate = (card.dataset.date || '').toLowerCase();
+        const pAnatomy = (card.dataset.anatomy || 'other').toLowerCase();
+        const enhancedCount = parseInt(card.dataset.enhanced || '0', 10);
+
+        // 1. Search Query Match
+        const matchesQuery = !query || pName.includes(query) || pId.includes(query) || pDesc.includes(query) || pDate.includes(query);
+
+        // 2. Status Match
+        let matchesStatus = true;
+        if (currentStatusFilter === 'enhanced') matchesStatus = enhancedCount > 0;
+        else if (currentStatusFilter === 'needs') matchesStatus = enhancedCount === 0;
+
+        // 3. Anatomy Match
+        let matchesAnatomy = true;
+        if (currentAnatomyFilter !== 'all') {
+            matchesAnatomy = pAnatomy.includes(currentAnatomyFilter) || pDesc.includes(currentAnatomyFilter);
+        }
+
+        if (matchesQuery && matchesStatus && matchesAnatomy) {
+            card.style.display = '';
+            visibleCount++;
+        } else {
+            card.style.display = 'none';
+        }
+    });
+
+    const countSpan = document.getElementById('visible-cases-count');
+    if (countSpan) countSpan.textContent = visibleCount;
+
+    const noResults = document.getElementById('no-search-results');
+    if (noResults) noResults.style.display = visibleCount === 0 && cards.length > 0 ? 'block' : 'none';
+}
+
 const checks=()=>[...document.querySelectorAll('.series-check:checked')];
 const bar=document.getElementById('bulk-bar'),count=document.getElementById('selected-count'),statusBox=document.getElementById('bulk-status'),toast=document.getElementById('queue-toast');
 
@@ -445,6 +556,42 @@ document.getElementById('bulk-enqueue').addEventListener('click',async()=>{const
         f"<button class='btn red' style='padding:7px 14px;background:#991b1b;border-color:#7f1d1d'>⚠️ Delete ALL Cases (مسح كل الحالات)</button></form>"
         f"</div></div>"
         f"<p class='muted'>Original raw series keep their base number (e.g. <b>S:14</b>), while RAD4AI-enhanced series add 100 (e.g. <b>S:114 [RAD4AI]</b>). Click <b>⚡ Instant RAD4AI Enhance</b> for 1-click enhancement, or <b>🔍 Compare Before/After</b> to inspect results.</p>"
+        f"""<div class='search-filter-box' style='background:rgba(15,23,42,0.65);border:1px solid #334155;border-radius:12px;padding:14px 18px;margin:14px 0 18px 0;box-shadow:0 4px 14px rgba(0,0,0,0.2)'>
+  <div style='display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-bottom:12px'>
+    <div style='flex:1;min-width:280px;position:relative'>
+      <span style='position:absolute;left:14px;top:50%;transform:translateY(-50%);font-size:16px;color:#94a3b8'>🔍</span>
+      <input type='text' id='study-search-input' placeholder='Search Patient Name, ID, Study or Anatomy (e.g. Brain, Spine, 7339)...' 
+             style='width:100%;padding:10px 38px 10px 40px;border-radius:8px;border:1px solid #475569;background:#0b1329;color:#f8fafc;font-size:14px;outline:none'
+             oninput='filterStudies()'>
+      <button type='button' id='clear-search-btn' onclick="document.getElementById('study-search-input').value='';filterStudies();" 
+              style='position:absolute;right:10px;top:50%;transform:translateY(-50%);background:none;border:none;color:#94a3b8;font-size:16px;cursor:pointer;display:none'>✕</button>
+    </div>
+    <div id='studies-search-stats' style='font-size:13px;font-weight:700;color:#38bdf8;background:rgba(56,189,248,0.1);padding:7px 15px;border-radius:8px;border:1px solid rgba(56,189,248,0.25);white-space:nowrap'>
+      Showing <span id='visible-cases-count'>{len(rows)}</span> of {len(rows)} cases
+    </div>
+  </div>
+
+  <div style='display:flex;justify-content:space-between;align-items:center;gap:14px;flex-wrap:wrap'>
+    <div style='display:flex;gap:6px;align-items:center;flex-wrap:wrap'>
+      <span style='font-size:12px;font-weight:700;color:#94a3b8;margin-right:2px'>Filter Status:</span>
+      <button type='button' class='filter-btn status-btn active' data-status='all' onclick='setStatusFilter(this)'>All Cases</button>
+      <button type='button' class='filter-btn status-btn' data-status='enhanced' onclick='setStatusFilter(this)'>✨ Enhanced Ready</button>
+      <button type='button' class='filter-btn status-btn' data-status='needs' onclick='setStatusFilter(this)'>⏳ Needs Enhancement (0 ready)</button>
+    </div>
+
+    <div style='display:flex;gap:6px;align-items:center;flex-wrap:wrap'>
+      <span style='font-size:12px;font-weight:700;color:#94a3b8;margin-right:2px'>Anatomy:</span>
+      <button type='button' class='filter-btn anatomy-btn active' data-anatomy='all' onclick='setAnatomyFilter(this)'>All</button>
+      <button type='button' class='filter-btn anatomy-btn' data-anatomy='brain' onclick='setAnatomyFilter(this)'>🧠 Brain</button>
+      <button type='button' class='filter-btn anatomy-btn' data-anatomy='spine' onclick='setAnatomyFilter(this)'>🦴 Spine</button>
+      <button type='button' class='filter-btn anatomy-btn' data-anatomy='knee' onclick='setAnatomyFilter(this)'>🦵 Knee</button>
+      <button type='button' class='filter-btn anatomy-btn' data-anatomy='shoulder' onclick='setAnatomyFilter(this)'>💪 Shoulder</button>
+    </div>
+  </div>
+</div>
+<div id='no-search-results' class='empty' style='display:none;background:#0b1329;border:1px dashed #334155;border-radius:10px;padding:30px;text-align:center;color:#94a3b8;margin-bottom:16px'>
+  🔍 No studies matching the current search filters. (لا توجد حالات مطابقة لمعايير البحث)
+</div>"""
         f"{studies_html}</section>"
         f"<section class='panel'><div class='panel-head'><h2>⚡ Processing Queue & Clinical Quality Gate</h2>{filters}</div>"
         f"<div class='table-wrap'><table><tr><th>Job #</th><th>Enhancer & Level</th><th>Status</th><th>Quality Gate (QC)</th><th>Performance & Edge Metrics</th><th>Radiologist Review</th><th>Notes / Error</th><th>Compare & Action</th></tr>{jobs_html}</table></div></section>{bulk_bar}{script}"

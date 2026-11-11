@@ -297,21 +297,26 @@ def studies(message: str = "", error: str = "", job_status: str = "", profile_fi
                 p_name_val = esc(patient.get('PatientName','')) or 'Unknown patient'
                 p_id_val = esc(patient.get('PatientID',''))
                 s_desc_val = esc(main.get('StudyDescription',''))
-                s_date_val = esc(main.get('StudyDate',''))
+                raw_date = str(main.get('StudyDate','')).strip()
+                if len(raw_date) == 8 and raw_date.isdigit():
+                    iso_date = f"{raw_date[:4]}-{raw_date[4:6]}-{raw_date[6:]}"
+                else:
+                    iso_date = raw_date
 
                 rows.append(
                     f"<details class='study-card' data-study='{esc(study.get('ID',''))}' "
                     f"data-patient-name='{esc(p_name_val.lower())}' "
                     f"data-patient-id='{esc(p_id_val.lower())}' "
                     f"data-desc='{esc(s_desc_val.lower())}' "
-                    f"data-date='{esc(s_date_val)}' "
+                    f"data-date='{esc(iso_date)}' "
+                    f"data-raw-date='{esc(raw_date)}' "
                     f"data-enhanced='{enhanced_count}' "
                     f"data-anatomy='{anatomy_tag}' {open_attr}>"
                     f"<summary style='display:flex;align-items:center;gap:12px'>"
                     f"<input class='study-check' type='checkbox' value='{esc(study.get('ID',''))}' title='Select Case' style='width:22px;height:22px;accent-color:#ef4444;cursor:pointer' onclick='event.stopPropagation()'>"
                     f"{thumb}<div style='flex:1'><b style='font-size:16px'>{esc(patient.get('PatientName','')) or 'Unknown patient'}</b> — "
                     f"<span style='color:#60a5fa;font-weight:700'>{esc(main.get('StudyDescription',''))}</span><br>"
-                    f"<span class='muted'>ID: {esc(patient.get('PatientID',''))} · Date: {esc(main.get('StudyDate',''))} · {len(raw_cells)} original series</span><br>"
+                    f"<span class='muted'>ID: <b>{esc(patient.get('PatientID',''))}</b> · Date: 📅 <b>{esc(iso_date or 'No date')}</b> · {len(raw_cells)} original series</span><br>"
                     f"<span class='badge {'ok' if enhanced_count else 'warn'}' style='margin-top:5px'>{enhanced_count} enhanced series ready</span></div>"
                     f"<span class='chevron'></span></summary>"
                     f"<div class='study-body'><div class='study-toolbar'>"
@@ -403,6 +408,82 @@ def studies(message: str = "", error: str = "", job_status: str = "", profile_fi
 </style>
 let currentStatusFilter = 'all';
 let currentAnatomyFilter = 'all';
+let currentDateFilter = 'all';
+let dateSortOrder = 'desc';
+
+function setDateQuick(btn, mode) {
+    document.querySelectorAll('.date-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    const dateInput = document.getElementById('study-date-input');
+    if (dateInput) dateInput.value = '';
+    currentDateFilter = mode;
+    filterStudies();
+}
+
+function onCustomDateChange(val) {
+    document.querySelectorAll('.date-btn').forEach(b => b.classList.remove('active'));
+    currentDateFilter = val ? val : 'all';
+    if (!val) {
+        document.querySelector('.date-btn[data-date="all"]')?.classList.add('active');
+    }
+    filterStudies();
+}
+
+function toggleDateSort() {
+    dateSortOrder = dateSortOrder === 'desc' ? 'asc' : 'desc';
+    const sortBtn = document.getElementById('date-sort-btn');
+    if (sortBtn) {
+        sortBtn.innerHTML = dateSortOrder === 'desc' ? '📅 Sort: Newest ⬇️' : '📅 Sort: Oldest ⬆️';
+    }
+    const container = document.querySelector('.study-card')?.parentNode;
+    if (!container) return;
+    const cards = [...document.querySelectorAll('.study-card')];
+    cards.sort((a, b) => {
+        const da = a.dataset.date || '';
+        const db = b.dataset.date || '';
+        return dateSortOrder === 'desc' ? db.localeCompare(da) : da.localeCompare(db);
+    });
+    cards.forEach(c => container.appendChild(c));
+}
+
+function checkDateMatch(cardDate, rawDate) {
+    if (currentDateFilter === 'all') return true;
+    let cDate = cardDate || '';
+    if (!cDate && rawDate && rawDate.length === 8) {
+        cDate = `${rawDate.slice(0,4)}-${rawDate.slice(4,6)}-${rawDate.slice(6)}`;
+    }
+    if (!cDate) return false;
+
+    // Specific exact date (YYYY-MM-DD)
+    if (currentDateFilter.includes('-')) {
+        return cDate === currentDateFilter;
+    }
+
+    const today = new Date();
+    const pad = n => String(n).padStart(2, '0');
+    const toYMD = d => `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`;
+    const todayStr = toYMD(today);
+
+    if (currentDateFilter === 'today') {
+        return cDate === todayStr;
+    }
+    if (currentDateFilter === 'yesterday') {
+        const y = new Date();
+        y.setDate(y.getDate() - 1);
+        return cDate === toYMD(y);
+    }
+    if (currentDateFilter === 'week') {
+        const past = new Date();
+        past.setDate(past.getDate() - 7);
+        return cDate >= toYMD(past) && cDate <= todayStr;
+    }
+    if (currentDateFilter === 'month') {
+        const past = new Date();
+        past.setDate(past.getDate() - 30);
+        return cDate >= toYMD(past) && cDate <= todayStr;
+    }
+    return true;
+}
 
 function setStatusFilter(btn) {
     document.querySelectorAll('.status-btn').forEach(b => b.classList.remove('active'));
@@ -448,7 +529,11 @@ function filterStudies() {
             matchesAnatomy = pAnatomy.includes(currentAnatomyFilter) || pDesc.includes(currentAnatomyFilter);
         }
 
-        if (matchesQuery && matchesStatus && matchesAnatomy) {
+        // 4. Date Match
+        const pRawDate = card.dataset.rawDate || '';
+        const matchesDate = checkDateMatch(pDate, pRawDate);
+
+        if (matchesQuery && matchesStatus && matchesAnatomy && matchesDate) {
             card.style.display = '';
             visibleCount++;
         } else {
@@ -586,6 +671,25 @@ document.getElementById('bulk-enqueue').addEventListener('click',async()=>{const
       <button type='button' class='filter-btn anatomy-btn' data-anatomy='spine' onclick='setAnatomyFilter(this)'>🦴 Spine</button>
       <button type='button' class='filter-btn anatomy-btn' data-anatomy='knee' onclick='setAnatomyFilter(this)'>🦵 Knee</button>
       <button type='button' class='filter-btn anatomy-btn' data-anatomy='shoulder' onclick='setAnatomyFilter(this)'>💪 Shoulder</button>
+    </div>
+  </div>
+
+  <!-- Date Filters Row -->
+  <div style='display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:12px;padding-top:10px;border-top:1px solid rgba(255,255,255,0.08)'>
+    <span style='font-size:12px;font-weight:700;color:#94a3b8;margin-right:2px'>📅 Date:</span>
+    <button type='button' class='filter-btn date-btn active' data-date='all' onclick='setDateQuick(this, "all")'>All Dates</button>
+    <button type='button' class='filter-btn date-btn' data-date='today' onclick='setDateQuick(this, "today")'>Today (اليوم)</button>
+    <button type='button' class='filter-btn date-btn' data-date='yesterday' onclick='setDateQuick(this, "yesterday")'>Yesterday (أمس)</button>
+    <button type='button' class='filter-btn date-btn' data-date='week' onclick='setDateQuick(this, "week")'>Last 7 Days (آخر أسبوع)</button>
+    <button type='button' class='filter-btn date-btn' data-date='month' onclick='setDateQuick(this, "month")'>This Month (هذا الشهر)</button>
+    
+    <div style='display:inline-flex;align-items:center;gap:8px;margin-left:auto;flex-wrap:wrap'>
+      <label style='font-size:12px;font-weight:700;color:#94a3b8'>📅 Pick Date:</label>
+      <input type='date' id='study-date-input' onchange='onCustomDateChange(this.value)' 
+             style='padding:5px 9px;border-radius:7px;border:1px solid #334155;background:#0b1329;color:#f8fafc;font-size:12px;outline:none'>
+      <button type='button' id='date-sort-btn' onclick='toggleDateSort()' class='filter-btn' style='background:#0f172a;border-color:#38bdf8;color:#38bdf8'>
+        📅 Sort: Newest ⬇️
+      </button>
     </div>
   </div>
 </div>

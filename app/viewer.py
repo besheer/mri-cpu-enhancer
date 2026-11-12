@@ -168,7 +168,7 @@ def profile_form(series_id: str, description: str, instances: int, existing_job=
     return (f"<div class='series-choice'><input class='series-check' type='checkbox' "
             f"value='{series_id}' aria-label='Select {esc(description)}'>"
             f"<form method='post' action='/admin/series/{series_id}/ai-swift' class='ai-quick-form'>"
-            f"<button class='btn ai-btn' title='Instant RAD4AI Rician-VST + NLM Physics-Safe Enhancement'>⚡ Instant RAD4AI Rician-NLM</button></form>"
+            f"<button class='btn ai-btn' title='Instant RAD4AI Spine & Ortho Pro High-Clarity Enhancement'>⚡ Instant RAD4AI Pro</button></form>"
             f"<form method='post' action='/admin/series/{series_id}/enqueue' class='actions enqueue-form'>"
             f"<select name='profile' style='padding:7px;border-radius:7px'>{options}</select>"
             f"<select name='strength' style='padding:7px;border-radius:7px'>{strengths}</select>"
@@ -1260,7 +1260,7 @@ def quick_ai_swift(series_id: str, request: Request, _: str = Depends(require_ad
         description = str(item.get("MainDicomTags", {}).get("SeriesDescription", ""))
         if is_derived_series(description):
             raise ValueError("Cannot reprocess an already enhanced series")
-        chosen_profile = "RICIAN_NLM_VST" if "RICIAN_NLM_VST" in enabled_profile_names() else "AI_SWIFT_DENOISE"
+        chosen_profile = "RAD4AI_SPINE_PRO" if "RAD4AI_SPINE_PRO" in enabled_profile_names() else "AI_SWIFT_DENOISE"
         validate_selection(chosen_profile, description, len(item.get("Instances", [])), True, "MEDIUM")
     except (httpx.HTTPError, ValueError) as exc:
         raise HTTPException(422, str(exc)) from exc

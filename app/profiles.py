@@ -10,7 +10,7 @@ from app.enhancer import conservative_baseline
 PROFILE_INFO = {
     "RICIAN_NLM_VST": {"label": "RAD4AI Rician-VST + Non-Local Means (Physics Safe)", "guidance": "Donoho Haar-MAD sigma estimation + Unbiased Rician VST + Integral-Image Non-Local Means & Tangent Coherence (Zero synthetic texture).", "min_slices": 1, "research_only": False, "auto_eligible": True},
     "AI_SWIFT_DENOISE": {"label": "RAD4AI Denoise (2.5D NAFNet + Rician VST)", "guidance": "2.5D multi-slice deep learning + Rician VST denoising with auto-sequence intelligence.", "min_slices": 1, "research_only": False, "auto_eligible": False},
-    "RAD4AI_SPINE_PRO": {"label": "RAD4AI Spine & Ortho Pro (High-Clarity)", "guidance": "2.5D ultra-smooth marrow/muscle Rician debiasing + tangent-coherent disc/root borders + coil shading equalization.", "min_slices": 1, "research_only": False, "auto_eligible": False},
+    "RAD4AI_SPINE_PRO": {"label": "RAD4AI Spine & Ortho Pro (High-Clarity)", "guidance": "2.5D ultra-smooth marrow/muscle Rician debiasing + tangent-coherent disc/root borders + coil shading equalization.", "min_slices": 1, "research_only": False, "auto_eligible": True},
     "RAD4AI_3T_HD": {"label": "RAD4AI 3T-HD True Anatomy (Anisotropic Tangent-Restore)", "guidance": "Structure-tensor tangent curve restoration + Rician debiasing + Non-Local Means (requires research/display acknowledgment).", "min_slices": 1, "research_only": True, "auto_eligible": False},
     "RAD4AI_SR_15T": {"label": "RAD4AI Super-Resolution (1.5T Matrix Look)", "guidance": "Sub-pixel edge reconstruction + anti-staircasing + 2.5D Rician suppression for high-field clarity.", "min_slices": 1, "research_only": False, "auto_eligible": False},
     "RAD4AI_GE_AW": {"label": "RAD4AI GE-AW Workstation (AIR Recon + PURE/SCIC)", "guidance": "GE AW Workstation look: AIR Recon DL denoise + PURE/SCIC coil illumination equalization + zero-floor background.", "min_slices": 1, "research_only": False, "auto_eligible": False},
@@ -31,7 +31,9 @@ def recommendation(description: str, instances: int) -> tuple[str, str]:
     name = description.upper()
     if any(word in name for word in ("SCANO", "LOCALIZER", "SURVEY")):
         return "BASE_MILD", "Localizer/Survey: Do not apply N4 or aggressive enhancement."
-    return "RICIAN_NLM_VST", "Recommended: RAD4AI Rician-VST + Non-Local Means physics-safe restoration (zero synthetic texture)."
+    if any(word in name for word in ("BRAIN", "HEAD", "NEURO", "SKULL")):
+        return "RICIAN_NLM_VST", "Recommended: RAD4AI Rician-VST + Non-Local Means physics-safe restoration (zero synthetic texture)."
+    return "RAD4AI_SPINE_PRO", "Recommended: RAD4AI Spine & Ortho Pro high-clarity restoration."
 
 
 def validate_selection(profile: str, description: str, instances: int, acknowledged: bool = False,

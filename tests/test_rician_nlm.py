@@ -90,7 +90,7 @@ def test_default_recommendation_and_auto_eligibility() -> None:
     assert PROFILE_INFO["RAD4AI_PRINT_MASTER"]["auto_eligible"] is False
     assert PROFILE_INFO["RAD4AI_SR_15T"]["auto_eligible"] is False
     assert PROFILE_INFO["RAD4AI_GE_AW"]["auto_eligible"] is False
-    assert PROFILE_INFO["RAD4AI_SPINE_PRO"]["auto_eligible"] is False
+    assert PROFILE_INFO["RAD4AI_SPINE_PRO"]["auto_eligible"] is True
 
 
 def test_local_physics_audit_never_imports_or_calls_network(monkeypatch) -> None:

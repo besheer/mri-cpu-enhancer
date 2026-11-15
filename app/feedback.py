@@ -59,6 +59,13 @@ def api_create_feedback(payload: FeedbackPayload):
     return JSONResponse({"id": fid, "status": "ok"})
 
 
+@router.post("/api/v1/feedback/send-cards")
+def api_send_cards(center_id: int = Form(8)):
+    from app.feedback_cards import send_feedback_cards_to_center
+    send_feedback_cards_to_center(center_id)
+    return RedirectResponse("/feedback?saved=1", status_code=303)
+
+
 @router.post("/api/v1/feedback/calibration")
 def api_toggle_calibration(center_id: int = Form(8), enabled: int = Form(1)):
     set_center_calibration(center_id, bool(enabled))
@@ -180,6 +187,10 @@ def feedback_page(saved: int = 0):
       وضع التقييم (3 مستويات): <strong>{"🟢 مفعّل (يرسل L1-SOFT / L2-BALANCED / L3-CRISP)" if cal_on else "⚪ متوقف (يرسل نسخة واحدة فقط)"}</strong>
     </p>
     {cal_btn}
+    <form method="post" action="/api/v1/feedback/send-cards" style="display:inline; margin-right:8px;">
+      <input type="hidden" name="center_id" value="{cid}">
+      <button type="submit" class="btn btn-primary">📤 إرسال بطاقات التقييم (5 صور DICOM) إلى GE</button>
+    </form>
   </div>
   {saved_banner}
   <div class="card">

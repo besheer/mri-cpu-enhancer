@@ -62,6 +62,45 @@ class IntakeWorker:
                 u_desc = description.upper()
                 if u_desc.startswith("SYNTH-"):
                     continue
+                if u_desc.startswith("FB-"):
+                    instances = series.get("Instances", [])
+                    if instances:
+                        origin = api.get(f"{self.url}/instances/{instances[0]}/metadata/1024")
+                        ret_aet = origin.text.strip() if origin.status_code == 200 else ""
+                        if ret_aet:
+                            card_map = {
+                                "FB-L3-ACCEPTED": ("L3-CRISP", "APPROVED", "GE Card: L3 ACCEPTED"),
+                                "FB-L3-REJECTED": ("L3-CRISP", "REJECT", "GE Card: L3 REJECTED"),
+                                "FB-MORE-GRAIN": ("", "MORE_GRAIN", "GE Card: MORE GRAIN"),
+                                "FB-SMOOTHER": ("", "SMOOTHER", "GE Card: SMOOTHER"),
+                                "FB-HIGHER-CLARITY": ("", "ADJUST", "GE Card: HIGHER CLARITY"),
+                            }
+                            level, verdict, note = card_map.get(u_desc, ("", "NOTE", f"GE Card: {description}"))
+                            last_pt, last_sdesc = "", ""
+                            with connect() as db:
+                                last_row = db.execute(
+                                    "SELECT study_id, description FROM inbound_series ORDER BY received_at DESC LIMIT 1"
+                                ).fetchone()
+                                if last_row:
+                                    last_sdesc = str(last_row["description"] or "")
+                                    if last_row["study_id"]:
+                                        st_r = api.get(f"{self.url}/studies/{last_row['study_id']}")
+                                        if st_r.status_code == 200:
+                                            last_pt = str(st_r.json().get("PatientMainDicomTags", {}).get("PatientName", ""))
+                            record_feedback(
+                                source="ge_dicom",
+                                series_id=sid,
+                                patient_name=last_pt,
+                                study_description=description,
+                                series_description=last_sdesc or description,
+                                level=level,
+                                verdict=verdict,
+                                note=note,
+                                source_aet=ret_aet,
+                            )
+                            audit("GE_CARD_FEEDBACK", "series", sid, f"card={u_desc};verdict={verdict};aet={ret_aet}")
+                            api.delete(f"{self.url}/series/{sid}")
+                    continue
                 modality = str(tags.get("Modality", ""))
                 is_derived = is_derived_series(description)
                 if modality != "MR" or is_derived:

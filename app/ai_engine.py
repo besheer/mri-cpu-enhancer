@@ -93,7 +93,7 @@ class MRIAIEngine:
 
         edge_protect_factor = 0.94
         bg_suppress_factor = 0.96 if mode == "print_master" else 0.45 if mode in ("ge_aw", "3t_hd") else 0.18 if mode == "rician_nlm" else 0.35
-        crisp_boost = 0.0 if mode == "rician_nlm" else 0.04 if mode in ("print_master", "3t_hd", "sr_15t") else 0.015 if mode in ("spine_pro", "ge_aw") else 0.01
+        crisp_boost = 0.020 if mode == "rician_nlm" else 0.04 if mode in ("print_master", "3t_hd", "sr_15t") else 0.025 if mode in ("spine_pro", "ge_aw") else 0.015
 
         if seq_type == "ANGIO_MRV":
             edge_protect_factor = 0.98
@@ -206,8 +206,8 @@ class MRIAIEngine:
             # Coherent Edge Deblurring (computed on the denoised signal curr_clean, NEVER on raw noisy norm_work!)
             if crisp_boost > 0:
                 sigma_detail = 0.75 if mode in ("sr_15t", "3t_hd") else 0.85
-                # Clamp positive detail tightly (+0.025) and roll off near peak brightness to prevent hyperintense/bleed-like spots
-                clean_detail = np.clip(curr_clean - gaussian_filter(curr_clean, sigma=sigma_detail), -0.035, 0.025)
+                # Clamp positive detail tightly (+0.015) and roll off near peak brightness to prevent hyperintense/bleed-like spots
+                clean_detail = np.clip(curr_clean - gaussian_filter(curr_clean, sigma=sigma_detail), -0.030, 0.015)
                 peak_rolloff = np.clip((1.02 - curr_clean) / 0.25, 0.25, 1.0)
                 crisp_gate = edge_mask * peak_rolloff
                 enhanced = np.clip(enhanced + (crisp_boost * 1.8) * clean_detail * crisp_gate, 0.0, 1.0)
@@ -244,9 +244,9 @@ class MRIAIEngine:
             overflow = np.maximum(vol_f[i] - vol_high, 0.0)
             restored = enhanced * vol_span + vol_low + overflow
 
-            # Auto-upscale low-matrix clinical scans (e.g. 256x256 FLAIR/T1 -> 512x512) while keeping 512x512 native
+            # Auto-upscale clinical scans 2x (256x256 -> 512x512, 512x512 -> 1024x1024) with PixelSpacing halved in DICOM
             h_s, w_s = slice_2d.shape
-            if 200 <= h_s <= 256 and 200 <= w_s <= 256:
+            if 200 <= h_s <= 512 and 200 <= w_s <= 512:
                 from scipy.ndimage import zoom as _zoom
                 restored = _zoom(restored, 2.0, order=3)
             if np.issubdtype(slice_2d.dtype, np.integer):

@@ -63,6 +63,8 @@ class MRIAIEngine:
         u = (description or "").upper()
         if any(k in u for k in ("MRV", "MRA", "TOF", "ANGIO", "VENO")):
             return "ANGIO_MRV"
+        if "PD" in u or "PROTON" in u:
+            return "PD_ORTHO"
         if any(k in u for k in ("STIR", "FLAIR", "FAT", "SPAIR", "FATSAT")) or " FS" in u or "_FS" in u or "-FS" in u:
             return "STIR_FLAIR"
         if "T2*" in u or "GRE" in u or "FE" in u:
@@ -71,8 +73,6 @@ class MRIAIEngine:
             return "T2_FSE"
         if "T1" in u:
             return "T1_SE"
-        if "PD" in u or "PROTON" in u:
-            return "PD_ORTHO"
         return "GENERAL_MR"
 
     def enhance_volume(self, volume: np.ndarray, strength: float = 0.8, mode: str = "standard",
@@ -100,18 +100,18 @@ class MRIAIEngine:
             bg_suppress_factor = 0.45
             crisp_boost = 0.04
         elif seq_type == "STIR_FLAIR":
-            edge_protect_factor = 0.97
+            edge_protect_factor = 0.98
             bg_suppress_factor = 0.18 if mode == "rician_nlm" else 0.35
-            flat_denoise = min(flat_denoise, 0.65)
-            crisp_boost = max(crisp_boost, 0.028)
+            flat_denoise = min(flat_denoise, 0.56)
+            crisp_boost = max(crisp_boost, 0.038)
         elif seq_type == "T1_SE":
             edge_protect_factor = 0.97
             flat_denoise = min(flat_denoise, 0.64)
             crisp_boost = max(crisp_boost, 0.030)
         elif seq_type == "PD_ORTHO":
             edge_protect_factor = 0.98
-            flat_denoise = min(flat_denoise, 0.62)
-            crisp_boost = max(crisp_boost, 0.036)
+            flat_denoise = min(flat_denoise, 0.56)
+            crisp_boost = max(crisp_boost, 0.045)
 
         num_slices = volume.shape[0]
         has_onnx = self.is_available
@@ -157,7 +157,8 @@ class MRIAIEngine:
             norm_slices.append(norm_work)
 
             # Physics-safe Rician-VST + Structure-Tensor Tangent-Guided Restoration
-            eff_strength = min(1.35, strength * (1.25 if (global_sigma >= 0.032 and strength > 0.6) else 1.0))
+            max_eff = 1.10 if seq_type in ("PD_ORTHO", "STIR_FLAIR") else 1.35
+            eff_strength = min(max_eff, strength * (1.25 if (global_sigma >= 0.032 and strength > 0.6) else 1.0))
             phys_clean, _ = structure_tensor_tangent_restore(
                 norm_work, strength=eff_strength, sigma_est=global_sigma
             )
@@ -240,9 +241,9 @@ class MRIAIEngine:
             elif strength <= 0.85:  # MEDIUM / L2
                 base_g = 0.16 if seq_type in ("T2_FSE", "T2_STAR_GRE", "STIR_FLAIR", "T1_SE") else 0.13
                 grain_ratio = base_g * fast_scan_scale
-            else:  # STRONG / L3 (cartilage/disc & trabecular crisp texture: 24% normal / ~19% fast-scan)
-                fast_l3_scale = 0.78 if global_sigma >= 0.032 else 1.0
-                base_g = 0.24 if seq_type in ("T2_FSE", "T2_STAR_GRE", "PD_ORTHO", "STIR_FLAIR", "T1_SE") else 0.20
+            else:  # STRONG / L3 (PD/STIR extra organic texture: 26% normal / ~21% fast; T2/T1: 24% / ~19%)
+                fast_l3_scale = 0.80 if global_sigma >= 0.032 else 1.0
+                base_g = 0.26 if seq_type in ("PD_ORTHO", "STIR_FLAIR") else 0.24 if seq_type in ("T2_FSE", "T2_STAR_GRE", "T1_SE") else 0.20
                 grain_ratio = base_g * fast_l3_scale
             texture_residual = norm_work - enhanced
             tissue_mask = np.clip(norm_work / 0.08, 0.0, 1.0)
@@ -274,8 +275,8 @@ class MRIAIEngine:
                 restored = _zoom(restored, scale_factor, order=3)
                 blur_hi = gaussian_filter(restored, sigma=1.1)
                 detail_hi = restored - blur_hi
-                limit_hi = max(vol_span * 0.025, 1e-4)
-                restored = restored + 0.35 * np.clip(detail_hi, -limit_hi, limit_hi)
+                limit_hi = max(vol_span * 0.030, 1e-4)
+                restored = restored + 0.48 * np.clip(detail_hi, -limit_hi, limit_hi)
             if np.issubdtype(slice_2d.dtype, np.integer):
                 info = np.iinfo(slice_2d.dtype)
                 results.append(np.rint(np.clip(restored, info.min, info.max)).astype(slice_2d.dtype))

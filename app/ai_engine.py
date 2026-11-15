@@ -212,6 +212,11 @@ class MRIAIEngine:
                 crisp_gate = edge_mask * peak_rolloff
                 enhanced = np.clip(enhanced + (crisp_boost * 1.8) * clean_detail * crisp_gate, 0.0, 1.0)
 
+            # T2 Fluid Purity & Whiteness Boost (+9% gentle fluid lift for crisp CSF/joint fluid in diagnosis & print)
+            if seq_type in ("T2_FSE", "T2_STAR_GRE"):
+                fluid_mask = np.clip((enhanced - 0.58) / 0.25, 0.0, 1.0) ** 1.3
+                enhanced = np.clip(enhanced * (1.0 + 0.09 * fluid_mask), 0.0, 1.0)
+
             # Crisp Natural MRI Grain (extra organic texture on T2: 28% MILD / 22% MED-STRONG; others: 22% / 16%)
             if seq_type in ("T2_FSE", "T2_STAR_GRE"):
                 grain_ratio = 0.28 if strength <= 0.6 else 0.22
@@ -239,6 +244,11 @@ class MRIAIEngine:
             overflow = np.maximum(vol_f[i] - vol_high, 0.0)
             restored = enhanced * vol_span + vol_low + overflow
 
+            # Auto-upscale low-matrix clinical scans (e.g. 256x256 FLAIR/T1 -> 512x512) while keeping 512x512 native
+            h_s, w_s = slice_2d.shape
+            if 200 <= h_s <= 256 and 200 <= w_s <= 256:
+                from scipy.ndimage import zoom as _zoom
+                restored = _zoom(restored, 2.0, order=3)
             if np.issubdtype(slice_2d.dtype, np.integer):
                 info = np.iinfo(slice_2d.dtype)
                 results.append(np.rint(np.clip(restored, info.min, info.max)).astype(slice_2d.dtype))

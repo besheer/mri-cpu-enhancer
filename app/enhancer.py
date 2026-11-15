@@ -135,9 +135,18 @@ def derive_with_pixels(ds: FileDataset, pixels: np.ndarray, series_uid: str,
                        series_description: str, derivation: str) -> FileDataset:
     """Create a traceable derived DICOM instance without changing its geometry."""
     _validate(ds)
-    if pixels.shape != ds.pixel_array.shape:
-        raise UnsupportedDicom("Processed pixels do not match source geometry")
+    src_h, src_w = ds.pixel_array.shape
+    dst_h, dst_w = pixels.shape
     output = copy.deepcopy(ds)
+    if (dst_h, dst_w) != (src_h, src_w):
+        if dst_h % src_h == 0 and dst_w % src_w == 0 and (dst_h // src_h) == (dst_w // src_w) >= 2:
+            scale = dst_h // src_h
+            output.Rows = int(dst_h)
+            output.Columns = int(dst_w)
+            if "PixelSpacing" in output and len(output.PixelSpacing) == 2:
+                output.PixelSpacing = [float(output.PixelSpacing[0]) / scale, float(output.PixelSpacing[1]) / scale]
+        else:
+            raise UnsupportedDicom("Processed pixels do not match source geometry")
     output.PixelData = pixels.astype(ds.pixel_array.dtype, copy=False).tobytes()
     try:
         output.SeriesNumber = int(ds.get('SeriesNumber', 0)) + 100

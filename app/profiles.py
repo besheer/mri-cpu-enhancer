@@ -173,11 +173,17 @@ def process_volume(volume: np.ndarray, profile: str, strength: str = "MEDIUM",
 
     src = source.astype(np.float32)
     dst = output.astype(np.float32)
+    if dst.shape != src.shape:
+        from scipy.ndimage import zoom as _zoom
+        factors = (1.0, src.shape[1] / dst.shape[1], src.shape[2] / dst.shape[2])
+        dst_eval = _zoom(dst, factors, order=1).astype(np.float32)
+    else:
+        dst_eval = dst
     span = max(float(np.percentile(src, 99) - np.percentile(src, 1)), 1.0)
     src_noise = float(np.std(src - gaussian_filter(src, sigma=(0, 1, 1))))
-    dst_noise = float(np.std(dst - gaussian_filter(dst, sigma=(0, 1, 1))))
+    dst_noise = float(np.std(dst_eval - gaussian_filter(dst_eval, sigma=(0, 1, 1))))
     src_smooth = gaussian_filter(src, sigma=(0, 1.0, 1.0))
-    dst_smooth = gaussian_filter(dst, sigma=(0, 1.0, 1.0))
+    dst_smooth = gaussian_filter(dst_eval, sigma=(0, 1.0, 1.0))
     g_src = np.hypot(sobel(src_smooth, axis=1), sobel(src_smooth, axis=2)).ravel()
     g_dst = np.hypot(sobel(dst_smooth, axis=1), sobel(dst_smooth, axis=2)).ravel()
     if g_src.std() > 1e-9 and g_dst.std() > 1e-9:
@@ -192,7 +198,7 @@ def process_volume(volume: np.ndarray, profile: str, strength: str = "MEDIUM",
         "sequence_mode": seq_detected,
         "context_mode": "2.5D Multi-Slice" if volume.shape[0] >= 3 else "2D Single-Slice",
         "seconds": round(time.perf_counter() - started, 3),
-        "normalized_mae": round(float(np.mean(np.abs(dst - src))) / span, 5),
+        "normalized_mae": round(float(np.mean(np.abs(dst_eval - src))) / span, 5),
         "noise_before": round(src_noise, 3),
         "noise_after": round(dst_noise, 3),
         "noise_change_percent": round((dst_noise - src_noise) * 100 / max(src_noise, 1e-6), 2),

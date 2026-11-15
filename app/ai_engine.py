@@ -226,10 +226,11 @@ class MRIAIEngine:
                 fluid_mask = np.clip((enhanced - 0.58) / 0.25, 0.0, 1.0) ** 1.3
                 enhanced = np.clip(enhanced * (1.0 + 0.09 * fluid_mask), 0.0, 1.0)
 
-            # Calibrated 3-level Natural Grain + Adaptive Fast-Scan Noise Suppression
-            # When input is noisy/fast-scan (global_sigma >= 0.032), scale down raw noise re-injection on MED/STRONG
+            # Calibrated Natural Grain + Adaptive Fast-Scan Noise Suppression (film print stays silky clean)
             fast_scan_scale = 0.65 if global_sigma >= 0.032 else 1.0
-            if strength <= 0.6:  # MILD / L1
+            if mode == "print_master":
+                grain_ratio = 0.03
+            elif strength <= 0.6:  # MILD / L1
                 if seq_type in ("T2_FSE", "T2_STAR_GRE"):
                     grain_ratio = 0.28
                 elif seq_type == "STIR_FLAIR":

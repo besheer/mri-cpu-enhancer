@@ -100,6 +100,8 @@ def derived_series_description(original: str, prefix: str = DEFAULT_PREFIX) -> s
         "ENH-L1-" if "L1-SOFT" in prefix
         else "ENH-L2-" if "L2-BALANCED" in prefix
         else "ENH-L3-" if "L3-CRISP" in prefix
+        else "ENH-L4-" if "L4-PRINT" in prefix
+        else "ENH-L5-" if "L5-AI3T" in prefix
         else "ENHANC-"
     )
     max_orig_len = max(1, 64 - len(lead) - 1 - len(tag))

@@ -203,6 +203,8 @@ def feedback_page(saved: int = 0):
         <label class="radio-btn"><input type="radio" name="level" value="L1-SOFT">L1-SOFT (ناعم)</label>
         <label class="radio-btn"><input type="radio" name="level" value="L2-BALANCED" checked>L2-BALANCED (متوازن)</label>
         <label class="radio-btn"><input type="radio" name="level" value="L3-CRISP">L3-CRISP (خشن وواضح)</label>
+        <label class="radio-btn"><input type="radio" name="level" value="L4-PRINT">L4-PRINT (للطباعة)</label>
+        <label class="radio-btn"><input type="radio" name="level" value="L5-AI3T">L5-AI3T (ذكاء اصطناعي 3T)</label>
         <label class="radio-btn"><input type="radio" name="level" value="ALL">الكل</label>
       </div>
 

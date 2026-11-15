@@ -92,8 +92,8 @@ class MRIAIEngine:
             flat_denoise = float(np.clip(0.45 + 0.28 * strength, 0.52, 0.74))
 
         edge_protect_factor = 0.94
-        bg_suppress_factor = 0.96 if mode == "print_master" else 0.45 if mode in ("ge_aw", "3t_hd") else 0.35
-        crisp_boost = 0.05 if mode in ("print_master", "3t_hd", "sr_15t") else 0.03 if mode in ("spine_pro", "ge_aw") else 0.015
+        bg_suppress_factor = 0.96 if mode == "print_master" else 0.45 if mode in ("ge_aw", "3t_hd") else 0.18 if mode == "rician_nlm" else 0.35
+        crisp_boost = 0.0 if mode == "rician_nlm" else 0.04 if mode in ("print_master", "3t_hd", "sr_15t") else 0.015 if mode in ("spine_pro", "ge_aw") else 0.01
 
         if seq_type == "ANGIO_MRV":
             edge_protect_factor = 0.98
@@ -101,9 +101,9 @@ class MRIAIEngine:
             crisp_boost = 0.04
         elif seq_type == "STIR_FLAIR":
             edge_protect_factor = 0.97
-            bg_suppress_factor = 0.38
-            flat_denoise = min(flat_denoise, 0.64)
-        elif seq_type == "T1_SE":
+            bg_suppress_factor = 0.18 if mode == "rician_nlm" else 0.35
+            flat_denoise = min(flat_denoise, 0.70)
+        elif seq_type == "T1_SE" and mode != "rician_nlm":
             edge_protect_factor = 0.95
             crisp_boost = max(crisp_boost, 0.03)
 
@@ -155,7 +155,7 @@ class MRIAIEngine:
                 norm_work, strength=strength, sigma_est=global_sigma
             )
 
-            if has_onnx:
+            if has_onnx and mode != "rician_nlm":
                 inp = norm_work[np.newaxis, np.newaxis, :, :]
                 pred = self.session.run(None, {input_name: inp})[0]
                 onnx_out = np.clip(pred[0, 0].astype(np.float32), 0.0, 1.0)
@@ -206,14 +206,14 @@ class MRIAIEngine:
             # Coherent Edge Deblurring (computed on the denoised signal curr_clean, NEVER on raw noisy norm_work!)
             if crisp_boost > 0:
                 sigma_detail = 0.75 if mode in ("sr_15t", "3t_hd") else 0.85
-                clean_detail = np.clip(curr_clean - gaussian_filter(curr_clean, sigma=sigma_detail), -0.05, 0.05)
-                # Keep bright white edges sharp and clear (cortical bone rims, cartilage, and bright fat)
-                crisp_gate = edge_mask
-                enhanced = np.clip(enhanced + (crisp_boost * 2.2) * clean_detail * crisp_gate, 0.0, 1.0)
+                # Clamp positive detail tightly (+0.025) and roll off near peak brightness to prevent hyperintense/bleed-like spots
+                clean_detail = np.clip(curr_clean - gaussian_filter(curr_clean, sigma=sigma_detail), -0.035, 0.025)
+                peak_rolloff = np.clip((1.02 - curr_clean) / 0.25, 0.25, 1.0)
+                crisp_gate = edge_mask * peak_rolloff
+                enhanced = np.clip(enhanced + (crisp_boost * 1.8) * clean_detail * crisp_gate, 0.0, 1.0)
 
-            # Authentic Natural Texture & Grain Retention ("خشنة حاجة بسيطة")
-            # Retains 14-18% of the authentic scanner noise in tissue regions to eliminate plastic/wax look
-            grain_ratio = 0.18 if strength <= 0.6 else 0.14 if strength <= 0.85 else 0.10
+            # Ultra-subtle Natural Texture Retention (2.5% at MILD, 1.5% at MEDIUM/STRONG) -> smooth without coarseness or plastic look
+            grain_ratio = 0.025 if strength <= 0.6 else 0.015
             texture_residual = norm_work - enhanced
             tissue_mask = np.clip(norm_work / 0.08, 0.0, 1.0)
             enhanced = np.clip(enhanced + (grain_ratio * tissue_mask) * texture_residual, 0.0, 1.0)

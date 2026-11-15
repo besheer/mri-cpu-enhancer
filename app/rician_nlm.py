@@ -146,9 +146,9 @@ def structure_tensor_tangent_restore(
     # 1. Rician Forward VST (removes positive Rician noise bias in dark muscles & air)
     debias_strength = 0.55 + 0.35 * float(strength)
     work = rician_forward_vst(a, sigma, debias_factor=debias_strength)
-    # Blend smoothly so bright CSF/fat stays at exact original scale while dark muscle/air is debiased
-    dark_gate = np.clip((0.42 - a) / 0.35, 0.0, 1.0)
-    work = a * (1.0 - 0.65 * dark_gate) + work * (0.65 * dark_gate)
+    # Debias only true background/near-zero noise (a < 0.14) so brain parenchyma keeps exact true intensity
+    dark_gate = np.clip((0.14 - a) / 0.10, 0.0, 1.0)
+    work = a * (1.0 - 0.50 * dark_gate) + work * (0.50 * dark_gate)
 
     # 2. Multi-scale Gaussian pyramid & Adaptive Guide for Vectorized NLM
     g08 = gaussian_filter(work, sigma=0.65)
@@ -163,7 +163,7 @@ def structure_tensor_tangent_restore(
         sigma=max(sigma, 0.02),
         patch_radius=pr,
         search_radius=3,
-        h_factor=0.75 + 0.30 * float(strength),
+        h_factor=0.95 + 0.35 * float(strength),
         guide=nlm_guide,
     )
 
@@ -220,10 +220,11 @@ def structure_tensor_tangent_restore(
     # Homogeneous tissue interior (anisotropic bilateral smoothing around NLM to suppress mottled clumps without blurring)
     diff_g14 = np.abs(nlm_clean - g14)
     w_g14 = np.exp(-((diff_g14 / max(1.5 * sigma, 0.03)) ** 2)) * ((1.0 - struct_gate) ** 1.5)
-    v_interior = nlm_clean * (1.0 - 0.35 * strength * w_g14) + g14 * (0.35 * strength * w_g14)
+    smooth_w = min(0.45 * strength, 0.45) * w_g14
+    v_interior = nlm_clean * (1.0 - smooth_w) + g14 * smooth_w
 
-    # Coherent edge restoration (tangent-smoothed curve + subtle deblur normal to edge, clamped to prevent halos)
-    deblur_delta = np.clip(v_tangent - g14, -0.025, 0.025)
+    # Coherent edge restoration (tangent-smoothed curve + tight deblur normal to edge, clamped to prevent bright spikes)
+    deblur_delta = np.clip(v_tangent - g14, -0.015, 0.010)
     v_edge = 0.72 * nlm_clean + 0.28 * (v_tangent + deblur_delta * (0.25 * float(strength)))
 
     out = v_interior * (1.0 - struct_gate) + v_edge * struct_gate

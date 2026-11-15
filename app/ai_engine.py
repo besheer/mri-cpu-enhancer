@@ -87,7 +87,7 @@ class MRIAIEngine:
         elif mode == "sr_15t":
             flat_denoise = float(np.clip(0.54 + 0.16 * strength, 0.60, 0.72))
         elif mode == "spine_pro":
-            flat_denoise = float(np.clip(0.58 + 0.16 * strength, 0.64, 0.76))
+            flat_denoise = float(np.clip(0.46 + 0.14 * strength, 0.48, 0.62))
         else:
             flat_denoise = float(np.clip(0.45 + 0.28 * strength, 0.52, 0.74))
 
@@ -132,7 +132,7 @@ class MRIAIEngine:
             norm = np.ascontiguousarray(np.clip((src - vol_low) / vol_span, 0.0, 1.0), dtype=np.float32)
             raw_norm_slices.append(norm)
 
-            if mode in ("spine_pro", "sr_15t", "ge_aw", "print_master", "3t_hd"):
+            if mode in ("sr_15t", "ge_aw", "print_master", "3t_hd"):
                 # Anti-Burnout Surface Coil Shading Equalization (GE PURE / SCIC homomorphic curve)
                 illum = gaussian_filter(norm, sigma=max(14.0, min(norm.shape) / 8.0))
                 fg = norm > 0.10
@@ -157,7 +157,7 @@ class MRIAIEngine:
                 inp = norm_work[np.newaxis, np.newaxis, :, :]
                 pred = self.session.run(None, {input_name: inp})[0]
                 onnx_out = np.clip(pred[0, 0].astype(np.float32), 0.0, 1.0)
-                smooth_sigma = 0.90 if mode == "spine_pro" else 0.85
+                smooth_sigma = 0.35 if mode in ("spine_pro", "ge_aw") else 0.50
                 onnx_clean = gaussian_filter(onnx_out, sigma=smooth_sigma)
                 # Hybrid fusion: combine ONNX neural prediction with Rician-VST Structure-Tensor physics restoration
                 w_phys = 0.65 if mode in ("3t_hd", "print_master", "spine_pro", "rician_nlm") else 0.45
@@ -203,11 +203,18 @@ class MRIAIEngine:
 
             # Coherent Edge Deblurring (computed on the denoised signal curr_clean, NEVER on raw noisy norm_work!)
             if crisp_boost > 0:
-                sigma_detail = 0.75 if mode in ("sr_15t", "3t_hd") else 0.90
+                sigma_detail = 0.75 if mode in ("sr_15t", "3t_hd") else 0.85
                 clean_detail = np.clip(curr_clean - gaussian_filter(curr_clean, sigma=sigma_detail), -0.05, 0.05)
-                bright_suppress = np.clip((0.90 - curr_clean) / 0.22, 0.0, 1.0)
-                crisp_gate = edge_mask * bright_suppress
-                enhanced = np.clip(enhanced + (crisp_boost * 2.5) * clean_detail * crisp_gate, 0.0, 1.0)
+                # Keep bright white edges sharp and clear (cortical bone rims, cartilage, and bright fat)
+                crisp_gate = edge_mask
+                enhanced = np.clip(enhanced + (crisp_boost * 2.2) * clean_detail * crisp_gate, 0.0, 1.0)
+
+            # Authentic Natural Texture & Grain Retention ("خشنة حاجة بسيطة")
+            # Retains 14-18% of the authentic scanner noise in tissue regions to eliminate plastic/wax look
+            grain_ratio = 0.18 if strength <= 0.6 else 0.14 if strength <= 0.85 else 0.10
+            texture_residual = norm_work - enhanced
+            tissue_mask = np.clip(norm_work / 0.08, 0.0, 1.0)
+            enhanced = np.clip(enhanced + (grain_ratio * tissue_mask) * texture_residual, 0.0, 1.0)
 
             # Display-only Film S-Curve is applied ONLY in print_master mode (never in diagnostic modes!)
             if mode == "print_master":

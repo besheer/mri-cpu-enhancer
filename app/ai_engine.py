@@ -266,12 +266,16 @@ class MRIAIEngine:
             overflow = np.maximum(vol_f[i] - vol_high, 0.0)
             restored = enhanced * vol_span + vol_low + overflow
 
-            # Auto-upscale all clinical scans to ~1024px matrix (256x256 -> 4x 1024x1024, 512x512 -> 2x 1024x1024)
+            # Auto-upscale all clinical scans to 1024x1024 + Post-Upscale Micro-Acutance to remove bicubic softness
             h_s, w_s = slice_2d.shape
             if 200 <= h_s <= 512 and 200 <= w_s <= 512:
                 from scipy.ndimage import zoom as _zoom
                 scale_factor = 4.0 if (h_s <= 256 and w_s <= 256) else 2.0
                 restored = _zoom(restored, scale_factor, order=3)
+                blur_hi = gaussian_filter(restored, sigma=1.1)
+                detail_hi = restored - blur_hi
+                limit_hi = max(vol_span * 0.025, 1e-4)
+                restored = restored + 0.35 * np.clip(detail_hi, -limit_hi, limit_hi)
             if np.issubdtype(slice_2d.dtype, np.integer):
                 info = np.iinfo(slice_2d.dtype)
                 results.append(np.rint(np.clip(restored, info.min, info.max)).astype(slice_2d.dtype))

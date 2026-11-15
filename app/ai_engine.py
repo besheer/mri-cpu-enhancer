@@ -104,9 +104,10 @@ class MRIAIEngine:
             bg_suppress_factor = 0.18 if mode == "rician_nlm" else 0.35
             flat_denoise = min(flat_denoise, 0.65)
             crisp_boost = max(crisp_boost, 0.028)
-        elif seq_type == "T1_SE" and mode != "rician_nlm":
-            edge_protect_factor = 0.95
-            crisp_boost = max(crisp_boost, 0.03)
+        elif seq_type == "T1_SE":
+            edge_protect_factor = 0.97
+            flat_denoise = min(flat_denoise, 0.64)
+            crisp_boost = max(crisp_boost, 0.030)
 
         num_slices = volume.shape[0]
         has_onnx = self.is_available
@@ -218,11 +219,13 @@ class MRIAIEngine:
                 fluid_mask = np.clip((enhanced - 0.58) / 0.25, 0.0, 1.0) ** 1.3
                 enhanced = np.clip(enhanced * (1.0 + 0.09 * fluid_mask), 0.0, 1.0)
 
-            # Crisp Natural MRI Grain (T2: 28%/22%; STIR_FLAIR: 27%/21% for fine detail clarity; others: 22%/16%)
+            # Crisp Natural MRI Grain (T2: 28%/22%; STIR_FLAIR: 27%/21%; T1_SE: 26%/20%; others: 22%/16%)
             if seq_type in ("T2_FSE", "T2_STAR_GRE"):
                 grain_ratio = 0.28 if strength <= 0.6 else 0.22
             elif seq_type == "STIR_FLAIR":
                 grain_ratio = 0.27 if strength <= 0.6 else 0.21
+            elif seq_type == "T1_SE":
+                grain_ratio = 0.26 if strength <= 0.6 else 0.20
             else:
                 grain_ratio = 0.22 if strength <= 0.6 else 0.16
             texture_residual = norm_work - enhanced

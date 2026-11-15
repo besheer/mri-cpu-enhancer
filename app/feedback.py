@@ -95,7 +95,7 @@ def web_submit_feedback(
 def feedback_page(saved: int = 0):
     centers = list_centers()
     target_center = next((c for c in centers if c["id"] == 8), centers[0] if centers else None)
-    cal_on = bool(target_center and target_center.get("calibration_mode", 0))
+    cal_on = bool(target_center and target_center["calibration_mode"])
     cid = target_center["id"] if target_center else 8
     cname = target_center["name"] if target_center else "DarElHa"
 

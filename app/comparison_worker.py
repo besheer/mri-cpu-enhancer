@@ -129,7 +129,7 @@ class ComparisonWorker:
             processed, metrics = process_volume(volume, profile, strength, spacing, description=description)
             output_uid = generate_uid()
             level_map = {"MILD": "L1-SOFT", "MEDIUM": "L2-BALANCED", "STRONG": "L3-CRISP"}
-            if center and center.get("calibration_mode"):
+            if center and center["calibration_mode"]:
                 desc_prefix = f"{level_map.get(strength, strength)}-{PREFIXES[profile]}"
             else:
                 desc_prefix = f"{PREFIXES[profile]}{strength}-"

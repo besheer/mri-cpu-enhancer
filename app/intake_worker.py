@@ -164,7 +164,7 @@ class IntakeWorker:
                     with connect() as db:
                         db.execute("UPDATE inbound_series SET status='FAILED',error='Profile is not eligible for automatic processing',updated_at=CURRENT_TIMESTAMP WHERE series_id=?", (sid,))
                     continue
-                if center.get("calibration_mode"):
+                if center["calibration_mode"]:
                     job_ids = [enqueue_comparison(sid, profile, lvl) for lvl in ("MILD", "MEDIUM", "STRONG")]
                     job_id = job_ids[0]
                     with connect() as db:

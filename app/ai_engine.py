@@ -266,11 +266,12 @@ class MRIAIEngine:
             overflow = np.maximum(vol_f[i] - vol_high, 0.0)
             restored = enhanced * vol_span + vol_low + overflow
 
-            # Auto-upscale clinical scans 2x (256x256 -> 512x512, 512x512 -> 1024x1024) with PixelSpacing halved in DICOM
+            # Auto-upscale all clinical scans to ~1024px matrix (256x256 -> 4x 1024x1024, 512x512 -> 2x 1024x1024)
             h_s, w_s = slice_2d.shape
             if 200 <= h_s <= 512 and 200 <= w_s <= 512:
                 from scipy.ndimage import zoom as _zoom
-                restored = _zoom(restored, 2.0, order=3)
+                scale_factor = 4.0 if (h_s <= 256 and w_s <= 256) else 2.0
+                restored = _zoom(restored, scale_factor, order=3)
             if np.issubdtype(slice_2d.dtype, np.integer):
                 info = np.iinfo(slice_2d.dtype)
                 results.append(np.rint(np.clip(restored, info.min, info.max)).astype(slice_2d.dtype))

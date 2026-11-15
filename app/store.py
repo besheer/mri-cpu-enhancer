@@ -127,6 +127,19 @@ def initialize() -> None:
               updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
               FOREIGN KEY(center_id) REFERENCES centers(id)
             );
+            CREATE TABLE IF NOT EXISTS feedback_events (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              source TEXT NOT NULL DEFAULT 'web',
+              series_id TEXT NOT NULL DEFAULT '',
+              patient_name TEXT NOT NULL DEFAULT '',
+              study_description TEXT NOT NULL DEFAULT '',
+              series_description TEXT NOT NULL DEFAULT '',
+              level TEXT NOT NULL DEFAULT '',
+              verdict TEXT NOT NULL DEFAULT 'NOTE',
+              note TEXT NOT NULL DEFAULT '',
+              source_aet TEXT NOT NULL DEFAULT '',
+              created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
             CREATE TABLE IF NOT EXISTS system_settings (
               key TEXT PRIMARY KEY,
               value TEXT NOT NULL,
@@ -215,6 +228,7 @@ def initialize() -> None:
             "auto_enhance_enabled": "INTEGER NOT NULL DEFAULT 0",
             "auto_profile": "TEXT NOT NULL DEFAULT 'RICIAN_NLM_VST'",
             "auto_strength": "TEXT NOT NULL DEFAULT 'MILD'",
+            "calibration_mode": "INTEGER NOT NULL DEFAULT 0",
         }
         for name, declaration in migrations.items():
             if name not in columns:
@@ -495,3 +509,44 @@ def authorize(ip: str, aet: str, called_aet: str = "") -> bool:
     if not allowed:
         record_pending_sender(ip, aet, called_aet)
     return allowed
+
+
+def record_feedback(
+    source: str = "web",
+    series_id: str = "",
+    patient_name: str = "",
+    study_description: str = "",
+    series_description: str = "",
+    level: str = "",
+    verdict: str = "NOTE",
+    note: str = "",
+    source_aet: str = "",
+) -> int:
+    with connect() as db:
+        cur = db.execute(
+            """
+            INSERT INTO feedback_events(
+                source, series_id, patient_name, study_description,
+                series_description, level, verdict, note, source_aet
+            ) VALUES(?,?,?,?,?,?,?,?,?)
+            """,
+            (source, series_id, patient_name, study_description, series_description, level, verdict, note, source_aet),
+        )
+        return int(cur.lastrowid)
+
+
+def list_feedback(limit: int = 50) -> list[dict]:
+    with connect() as db:
+        rows = db.execute(
+            "SELECT * FROM feedback_events ORDER BY id DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def set_center_calibration(center_id: int, enabled: bool) -> None:
+    with connect() as db:
+        db.execute(
+            "UPDATE centers SET calibration_mode=? WHERE id=?",
+            (1 if enabled else 0, center_id),
+        )

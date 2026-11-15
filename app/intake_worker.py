@@ -8,7 +8,7 @@ import httpx
 
 from app.enhancer import is_derived_series
 from app.profiles import PROFILES
-from app.store import audit, auto_eligible_profile_names, connect, enabled_profile_names, enqueue_comparison, get_center_by_aet, setting
+from app.store import audit, auto_eligible_profile_names, connect, enabled_profile_names, enqueue_comparison, get_center_by_aet, record_feedback, setting
 
 log = logging.getLogger("intake-worker")
 
@@ -60,9 +60,68 @@ class IntakeWorker:
                 # Synthetic Lab studies and already-enhanced series are managed in their own registry
                 # and must never enter branch intake or automatic-return workflows.
                 u_desc = description.upper()
-                if (tags.get("Modality") != "MR"
-                        or is_derived_series(description)
-                        or u_desc.startswith("SYNTH-")):
+                if u_desc.startswith("SYNTH-"):
+                    continue
+                modality = str(tags.get("Modality", ""))
+                is_derived = is_derived_series(description)
+                if modality != "MR" or is_derived:
+                    # Capture returned enhanced series or Secondary Capture notes sent back from GE AW
+                    instances = series.get("Instances", [])
+                    if instances:
+                        with connect() as db:
+                            locally_created = db.execute(
+                                "SELECT 1 FROM comparison_jobs WHERE output_series_id=?", (sid,)
+                            ).fetchone()
+                            already_logged = db.execute(
+                                "SELECT 1 FROM feedback_events WHERE series_id=?", (sid,)
+                            ).fetchone()
+                        if not locally_created and not already_logged:
+                            origin = api.get(f"{self.url}/instances/{instances[0]}/metadata/1024")
+                            ret_aet = origin.text.strip() if origin.status_code == 200 else ""
+                            if ret_aet:
+                                pt_name = ""
+                                st_desc = ""
+                                parent_study = series.get("ParentStudy", "")
+                                if parent_study:
+                                    st_r = api.get(f"{self.url}/studies/{parent_study}")
+                                    if st_r.status_code == 200:
+                                        st_j = st_r.json()
+                                        pt_name = str(st_j.get("PatientMainDicomTags", {}).get("PatientName", ""))
+                                        st_desc = str(st_j.get("MainDicomTags", {}).get("StudyDescription", ""))
+                                img_comment = ""
+                                st_comment = ""
+                                sim_r = api.get(f"{self.url}/instances/{instances[0]}/simplified-tags")
+                                if sim_r.status_code == 200:
+                                    sim_j = sim_r.json()
+                                    img_comment = str(sim_j.get("ImageComments", ""))
+                                    st_comment = str(sim_j.get("StudyComments", ""))
+                                combined_note = " | ".join(p for p in (description, img_comment, st_comment) if p)
+                                upper_note = combined_note.upper()
+                                level = (
+                                    "L1-SOFT" if ("L1-" in upper_note or "MILD" in upper_note)
+                                    else "L2-BALANCED" if ("L2-" in upper_note or "MEDIUM" in upper_note)
+                                    else "L3-CRISP" if ("L3-" in upper_note or "STRONG" in upper_note)
+                                    else ""
+                                )
+                                verdict = (
+                                    "REJECT" if any(k in upper_note for k in ("REJECT", "BAD", "REDO", "NO"))
+                                    else "MORE_GRAIN" if "GRAIN" in upper_note
+                                    else "SMOOTHER" if "SOFT" in upper_note and "L1-SOFT" not in upper_note
+                                    else "ADJUST" if any(k in upper_note for k in ("ADJUST", "FIX", "CRISP", "DARK", "BRIGHT"))
+                                    else "APPROVED"
+                                )
+                                record_feedback(
+                                    source="ge_dicom",
+                                    series_id=sid,
+                                    patient_name=pt_name,
+                                    study_description=st_desc,
+                                    series_description=description,
+                                    level=level,
+                                    verdict=verdict,
+                                    note=combined_note,
+                                    source_aet=ret_aet,
+                                )
+                                audit("GE_FEEDBACK_CAPTURED", "series", sid, f"aet={ret_aet};verdict={verdict};level={level}")
                     continue
                 instances = series.get("Instances", [])
                 if not instances:
@@ -105,7 +164,14 @@ class IntakeWorker:
                     with connect() as db:
                         db.execute("UPDATE inbound_series SET status='FAILED',error='Profile is not eligible for automatic processing',updated_at=CURRENT_TIMESTAMP WHERE series_id=?", (sid,))
                     continue
-                job_id = enqueue_comparison(sid, profile, strength)
-                with connect() as db:
-                    db.execute("UPDATE inbound_series SET status='QUEUED',job_id=?,updated_at=CURRENT_TIMESTAMP WHERE series_id=?", (job_id, sid))
-                audit("AUTO_ENHANCE_QUEUED", "series", sid, f"job={job_id};profile={profile};strength={strength}")
+                if center.get("calibration_mode"):
+                    job_ids = [enqueue_comparison(sid, profile, lvl) for lvl in ("MILD", "MEDIUM", "STRONG")]
+                    job_id = job_ids[0]
+                    with connect() as db:
+                        db.execute("UPDATE inbound_series SET status='QUEUED',job_id=?,updated_at=CURRENT_TIMESTAMP WHERE series_id=?", (job_id, sid))
+                    audit("AUTO_CALIBRATION_QUEUED", "series", sid, f"jobs={job_ids};profile={profile}")
+                else:
+                    job_id = enqueue_comparison(sid, profile, strength)
+                    with connect() as db:
+                        db.execute("UPDATE inbound_series SET status='QUEUED',job_id=?,updated_at=CURRENT_TIMESTAMP WHERE series_id=?", (job_id, sid))
+                    audit("AUTO_ENHANCE_QUEUED", "series", sid, f"job={job_id};profile={profile};strength={strength}")

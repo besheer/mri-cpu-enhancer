@@ -128,7 +128,12 @@ class ComparisonWorker:
             spacing = (float(pixel_spacing[1]), float(pixel_spacing[0]), abs(slice_spacing))
             processed, metrics = process_volume(volume, profile, strength, spacing, description=description)
             output_uid = generate_uid()
-            output_description = derived_series_description(description, f"{PREFIXES[profile]}{strength}-")
+            level_map = {"MILD": "L1-SOFT", "MEDIUM": "L2-BALANCED", "STRONG": "L3-CRISP"}
+            if center and center.get("calibration_mode"):
+                desc_prefix = f"{level_map.get(strength, strength)}-{PREFIXES[profile]}"
+            else:
+                desc_prefix = f"{PREFIXES[profile]}{strength}-"
+            output_description = derived_series_description(description, desc_prefix)
             output_series_id = ""
             for index, (dataset, pixels) in enumerate(zip(datasets, processed), start=1):
                 derived = derive_with_pixels(dataset, pixels, output_uid, output_description,

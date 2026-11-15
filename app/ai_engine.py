@@ -236,9 +236,10 @@ class MRIAIEngine:
             elif strength <= 0.85:  # MEDIUM / L2
                 base_g = 0.16 if seq_type in ("T2_FSE", "T2_STAR_GRE", "STIR_FLAIR", "T1_SE") else 0.13
                 grain_ratio = base_g * fast_scan_scale
-            else:  # STRONG / L3 (deep fast-scan restoration with subtle natural texture)
-                base_g = 0.09 if seq_type in ("T2_FSE", "T2_STAR_GRE", "STIR_FLAIR", "T1_SE") else 0.07
-                grain_ratio = base_g * fast_scan_scale
+            else:  # STRONG / L3 (deep fast-scan restoration with balanced organic MRI grain ~13% fast / 18% normal)
+                fast_l3_scale = 0.72 if global_sigma >= 0.032 else 1.0
+                base_g = 0.18 if seq_type in ("T2_FSE", "T2_STAR_GRE", "STIR_FLAIR", "T1_SE") else 0.14
+                grain_ratio = base_g * fast_l3_scale
             texture_residual = norm_work - enhanced
             tissue_mask = np.clip(norm_work / 0.08, 0.0, 1.0)
             enhanced = np.clip(enhanced + (grain_ratio * tissue_mask) * texture_residual, 0.0, 1.0)

@@ -71,7 +71,7 @@ class MRIAIEngine:
             return "T2_FSE"
         if "T1" in u:
             return "T1_SE"
-        if "PD" in u:
+        if "PD" in u or "PROTON" in u:
             return "PD_ORTHO"
         return "GENERAL_MR"
 
@@ -108,6 +108,10 @@ class MRIAIEngine:
             edge_protect_factor = 0.97
             flat_denoise = min(flat_denoise, 0.64)
             crisp_boost = max(crisp_boost, 0.030)
+        elif seq_type == "PD_ORTHO":
+            edge_protect_factor = 0.98
+            flat_denoise = min(flat_denoise, 0.62)
+            crisp_boost = max(crisp_boost, 0.036)
 
         num_slices = volume.shape[0]
         has_onnx = self.is_available

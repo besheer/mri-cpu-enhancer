@@ -96,9 +96,15 @@ def derived_series_description(original: str, prefix: str = DEFAULT_PREFIX) -> s
         tag = "[RAD4AI]"
     else:
         tag = "[ENHANCED]"
-    max_orig_len = max(1, 64 - len("ENHANC-") - 1 - len(tag))
+    lead = (
+        "ENH-L1-" if "L1-SOFT" in prefix
+        else "ENH-L2-" if "L2-BALANCED" in prefix
+        else "ENH-L3-" if "L3-CRISP" in prefix
+        else "ENHANC-"
+    )
+    max_orig_len = max(1, 64 - len(lead) - 1 - len(tag))
     clipped_orig = orig[:max_orig_len].rstrip()
-    return f"ENHANC-{clipped_orig} {tag}"
+    return f"{lead}{clipped_orig} {tag}"
 
 
 def enhance_dataset(

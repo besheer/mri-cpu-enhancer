@@ -63,7 +63,7 @@ class MRIAIEngine:
         u = (description or "").upper()
         if any(k in u for k in ("MRV", "MRA", "TOF", "ANGIO", "VENO")):
             return "ANGIO_MRV"
-        if any(k in u for k in ("STIR", "FLAIR", "FAT", "FS", "SPAIR")):
+        if any(k in u for k in ("STIR", "FLAIR", "FAT", "SPAIR", "FATSAT")) or " FS" in u or "_FS" in u or "-FS" in u:
             return "STIR_FLAIR"
         if "T2*" in u or "GRE" in u or "FE" in u:
             return "T2_STAR_GRE"
@@ -111,10 +111,12 @@ class MRIAIEngine:
         has_onnx = self.is_available
         input_name = self.session.get_inputs()[0].name if has_onnx else ""
 
-        # Compute one global 3D volume intensity window so relative inter-slice contrast is 100% preserved
+        # Compute one global 3D volume intensity window preserving full T2 fluid dynamic range (no 99% clipping)
         vol_f = volume.astype(np.float32)
-        vol_low, vol_high = np.percentile(vol_f, (1.0, 99.0))
-        vol_low = float(vol_low)
+        vol_low = float(np.percentile(vol_f, 0.5))
+        p999 = float(np.percentile(vol_f, 99.95))
+        v_max = float(vol_f.max())
+        vol_high = v_max if v_max <= p999 * 1.8 else p999
         vol_span = max(float(vol_high - vol_low), 1e-4)
 
         # Estimate one global Rician noise sigma on the middle slice using the unified volume window
@@ -231,7 +233,8 @@ class MRIAIEngine:
             bg_mask = np.clip((bg_threshold - norm_work) / bg_threshold, 0.0, 1.0)
             enhanced = enhanced * (1.0 - bg_suppress_factor * bg_mask)
 
-            restored = enhanced * vol_span + vol_low
+            overflow = np.maximum(vol_f[i] - vol_high, 0.0)
+            restored = enhanced * vol_span + vol_low + overflow
 
             if np.issubdtype(slice_2d.dtype, np.integer):
                 info = np.iinfo(slice_2d.dtype)

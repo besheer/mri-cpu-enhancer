@@ -38,3 +38,18 @@ def test_quality_gate_fails_instance_mismatch_and_excessive_change() -> None:
     }, 15, 14)
     assert status == "FAIL"
     assert any("Instance count mismatch" in reason for reason in reasons)
+
+
+def test_quality_gate_catches_t2_fluid_clipping():
+    status, reasons = evaluate_quality(
+        {
+            "edge_preservation_percent": 95.0,
+            "normalized_mae": 0.03,
+            "noise_change_percent": -25.0,
+            "peak_preservation_percent": 55.0,
+        },
+        source_instances=19,
+        output_instances=19,
+    )
+    assert status == "FAIL"
+    assert any("fluid clipping" in r for r in reasons)

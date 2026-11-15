@@ -197,5 +197,6 @@ def process_volume(volume: np.ndarray, profile: str, strength: str = "MEDIUM",
         "noise_after": round(dst_noise, 3),
         "noise_change_percent": round((dst_noise - src_noise) * 100 / max(src_noise, 1e-6), 2),
         "edge_preservation_percent": edge_corr_pct,
+        "peak_preservation_percent": round(min(100.0, (float(np.percentile(dst, 99.95)) / max(float(np.percentile(src, 99.95)), 1e-4)) * 100.0), 2) if float(np.percentile(src, 99.95)) > 10.0 else 100.0,
     }
     return output, metrics

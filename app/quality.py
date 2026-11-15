@@ -27,6 +27,13 @@ def evaluate_quality(metrics: dict[str, float | str], source_instances: int,
     elif noise_change < -70 and edge < 85:
         warnings.append(f"Strong noise reduction: {noise_change:.2f}%")
 
+    if "peak_preservation_percent" in metrics:
+        peak_pres = float(metrics["peak_preservation_percent"])
+        if peak_pres < 70:
+            failures.append(f"Highlight / T2 fluid clipping too severe: {peak_pres:.2f}%")
+        elif peak_pres < 85:
+            warnings.append(f"Review highlight preservation: {peak_pres:.2f}%")
+
     if failures:
         return "FAIL", failures + warnings
     if warnings:

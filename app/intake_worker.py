@@ -8,7 +8,7 @@ import httpx
 
 from app.enhancer import is_derived_series
 from app.profiles import PROFILES
-from app.store import audit, auto_eligible_profile_names, connect, enqueue_comparison, get_center_by_aet, setting
+from app.store import audit, auto_eligible_profile_names, connect, enabled_profile_names, enqueue_comparison, get_center_by_aet, setting
 
 log = logging.getLogger("intake-worker")
 
@@ -81,8 +81,27 @@ class IntakeWorker:
                 audit("SERIES_RECEIVED", "series", sid, f"aet={source_aet};instances={len(instances)}")
                 if not center or not center["auto_enhance_enabled"]:
                     continue
+                if any(w in u_desc for w in ("LOCALIZER", "SCANO", "SURVEY", "3PLANE", "3-PLANE", "CALIB")):
+                    with connect() as db:
+                        db.execute("UPDATE inbound_series SET status='SKIPPED_LOCALIZER',updated_at=CURRENT_TIMESTAMP WHERE series_id=?", (sid,))
+                    audit("LOCALIZER_SKIPPED", "series", sid, f"desc={description}")
+                    continue
+                study_desc = ""
+                parent_study = series.get("ParentStudy", "")
+                if parent_study:
+                    try:
+                        st_resp = api.get(f"{self.url}/studies/{parent_study}")
+                        if st_resp.status_code == 200:
+                            study_desc = str(st_resp.json().get("MainDicomTags", {}).get("StudyDescription", "")).upper()
+                    except Exception:
+                        study_desc = ""
+                combined_desc = f"{study_desc} {u_desc}"
                 profile, strength = center["auto_profile"], center["auto_strength"]
-                if profile not in PROFILES or (profile not in auto_eligible_profile_names() and profile not in enabled_profile_names()):
+                auto_allowed = auto_eligible_profile_names()
+                enabled_set = enabled_profile_names()
+                if any(w in combined_desc for w in ("BRAIN", "HEAD", "NEURO", "SKULL", "FLAIR")) and "RICIAN_NLM_VST" in (auto_allowed & enabled_set):
+                    profile = "RICIAN_NLM_VST"
+                if profile not in PROFILES or (profile not in auto_allowed and profile not in enabled_set):
                     with connect() as db:
                         db.execute("UPDATE inbound_series SET status='FAILED',error='Profile is not eligible for automatic processing',updated_at=CURRENT_TIMESTAMP WHERE series_id=?", (sid,))
                     continue

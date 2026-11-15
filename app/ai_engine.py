@@ -153,8 +153,9 @@ class MRIAIEngine:
             norm_slices.append(norm_work)
 
             # Physics-safe Rician-VST + Structure-Tensor Tangent-Guided Restoration
+            eff_strength = min(1.35, strength * (1.25 if (global_sigma >= 0.032 and strength > 0.6) else 1.0))
             phys_clean, _ = structure_tensor_tangent_restore(
-                norm_work, strength=strength, sigma_est=global_sigma
+                norm_work, strength=eff_strength, sigma_est=global_sigma
             )
 
             if has_onnx and mode != "rician_nlm":
@@ -212,22 +213,32 @@ class MRIAIEngine:
                 clean_detail = np.clip(curr_clean - gaussian_filter(curr_clean, sigma=sigma_detail), -0.030, 0.015)
                 peak_rolloff = np.clip((1.02 - curr_clean) / 0.25, 0.25, 1.0)
                 crisp_gate = edge_mask * peak_rolloff
-                enhanced = np.clip(enhanced + (crisp_boost * 1.8) * clean_detail * crisp_gate, 0.0, 1.0)
+                crisp_mult = 1.2 if strength <= 0.6 else 1.6 if strength <= 0.85 else 2.0
+                enhanced = np.clip(enhanced + (crisp_boost * crisp_mult) * clean_detail * crisp_gate, 0.0, 1.0)
 
             # T2 Fluid Purity & Whiteness Boost (+9% gentle fluid lift for crisp CSF/joint fluid in diagnosis & print)
             if seq_type in ("T2_FSE", "T2_STAR_GRE"):
                 fluid_mask = np.clip((enhanced - 0.58) / 0.25, 0.0, 1.0) ** 1.3
                 enhanced = np.clip(enhanced * (1.0 + 0.09 * fluid_mask), 0.0, 1.0)
 
-            # Crisp Natural MRI Grain (T2: 28%/22%; STIR_FLAIR: 27%/21%; T1_SE: 26%/20%; others: 22%/16%)
-            if seq_type in ("T2_FSE", "T2_STAR_GRE"):
-                grain_ratio = 0.28 if strength <= 0.6 else 0.22
-            elif seq_type == "STIR_FLAIR":
-                grain_ratio = 0.27 if strength <= 0.6 else 0.21
-            elif seq_type == "T1_SE":
-                grain_ratio = 0.26 if strength <= 0.6 else 0.20
-            else:
-                grain_ratio = 0.22 if strength <= 0.6 else 0.16
+            # Calibrated 3-level Natural Grain + Adaptive Fast-Scan Noise Suppression
+            # When input is noisy/fast-scan (global_sigma >= 0.032), scale down raw noise re-injection on MED/STRONG
+            fast_scan_scale = 0.65 if global_sigma >= 0.032 else 1.0
+            if strength <= 0.6:  # MILD / L1
+                if seq_type in ("T2_FSE", "T2_STAR_GRE"):
+                    grain_ratio = 0.28
+                elif seq_type == "STIR_FLAIR":
+                    grain_ratio = 0.27
+                elif seq_type == "T1_SE":
+                    grain_ratio = 0.26
+                else:
+                    grain_ratio = 0.22
+            elif strength <= 0.85:  # MEDIUM / L2
+                base_g = 0.16 if seq_type in ("T2_FSE", "T2_STAR_GRE", "STIR_FLAIR", "T1_SE") else 0.13
+                grain_ratio = base_g * fast_scan_scale
+            else:  # STRONG / L3 (deep fast-scan restoration with subtle natural texture)
+                base_g = 0.09 if seq_type in ("T2_FSE", "T2_STAR_GRE", "STIR_FLAIR", "T1_SE") else 0.07
+                grain_ratio = base_g * fast_scan_scale
             texture_residual = norm_work - enhanced
             tissue_mask = np.clip(norm_work / 0.08, 0.0, 1.0)
             enhanced = np.clip(enhanced + (grain_ratio * tissue_mask) * texture_residual, 0.0, 1.0)

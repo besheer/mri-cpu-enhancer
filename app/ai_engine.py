@@ -212,8 +212,8 @@ class MRIAIEngine:
                 crisp_gate = edge_mask * peak_rolloff
                 enhanced = np.clip(enhanced + (crisp_boost * 1.8) * clean_detail * crisp_gate, 0.0, 1.0)
 
-            # Slightly Higher Natural MRI Grain (11% at MILD, 8% at MEDIUM/STRONG) -> crisp organic MRI texture without heavy coarseness
-            grain_ratio = 0.11 if strength <= 0.6 else 0.08
+            # Moderate Natural MRI Grain (15% at MILD, 11% at MEDIUM/STRONG) -> crisp organic MRI texture
+            grain_ratio = 0.15 if strength <= 0.6 else 0.11
             texture_residual = norm_work - enhanced
             tissue_mask = np.clip(norm_work / 0.08, 0.0, 1.0)
             enhanced = np.clip(enhanced + (grain_ratio * tissue_mask) * texture_residual, 0.0, 1.0)

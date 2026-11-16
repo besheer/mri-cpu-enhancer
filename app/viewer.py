@@ -1289,7 +1289,7 @@ def enqueue(series_id: str, request: Request, profile: str = Form(...), strength
         validate_selection(profile, description, len(item.get("Instances", [])), bool(acknowledged), strength)
     except (httpx.HTTPError, ValueError) as exc:
         raise HTTPException(422, str(exc)) from exc
-    job_id = enqueue_comparison(series_id, profile, strength)
+    job_id = enqueue_comparison(series_id, profile, strength, acknowledged=bool(acknowledged))
     if request.headers.get("x-requested-with") == "fetch" or "application/json" in request.headers.get("accept", ""):
         return JSONResponse({"ok": True, "job_id": job_id})
     return RedirectResponse(f"/admin/studies?message=" + quote(f"⚡ تمت إضافة السلسلة لطابور المعالجة بنجاح (Job #{job_id})!"), 303)
@@ -1342,7 +1342,7 @@ def enqueue_batch(series_ids: list[str] = Form(...), profiles: list[str] = Form(
                 checked.append(series_id)
     except (httpx.HTTPError, ValueError) as exc:
         raise HTTPException(422, str(exc)) from exc
-    job_ids = [enqueue_comparison(series_id, profile, "MILD" if profile == "BASE_MILD" else strength)
+    job_ids = [enqueue_comparison(series_id, profile, "MILD" if profile == "BASE_MILD" else strength, acknowledged=bool(acknowledged))
                for series_id in checked for profile in unique_profiles]
     return JSONResponse({"ok": True, "count": len(job_ids), "job_ids": job_ids})
 

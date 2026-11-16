@@ -245,6 +245,7 @@ def initialize() -> None:
             "processed_instances": "INTEGER NOT NULL DEFAULT 0",
             "archived": "INTEGER NOT NULL DEFAULT 0",
             "gemini_audit": "TEXT NOT NULL DEFAULT ''",
+            "acknowledged": "INTEGER NOT NULL DEFAULT 0",
         }
         for name, declaration in job_migrations.items():
             if name not in job_columns:
@@ -275,10 +276,10 @@ def initialize() -> None:
             ("RICIAN_NLM_VST", "RAD4AI Rician-VST + Non-Local Means (Physics Safe)", 1, 1, "Donoho Haar-MAD sigma + Unbiased Rician VST + Integral-Image NLM & Tangent Coherence"),
             ("AI_SWIFT_DENOISE", "RAD4AI Denoise (2.5D NAFNet + Rician VST)", 1, 1, "2.5D Multi-Slice AI + Rician VST Denoise + Auto-Sequence Intelligence"),
             ("RAD4AI_SPINE_PRO", "RAD4AI Spine & Ortho Pro (High-Clarity)", 1, 1, "2.5D Ultra-Smooth Rician Debiasing + Tangent Disc/Root Borders + Coil Equalization"),
-            ("RAD4AI_SR_15T", "RAD4AI Super-Resolution (1.5T Matrix Look)", 1, 1, "Sub-Pixel Detail Restoration + Anti-Staircasing + 2.5D Rician Suppression"),
-            ("RAD4AI_3T_HD", "RAD4AI 3T-HD True Anatomy (Anisotropic Tangent-Restore)", 1, 1, "Structure-Tensor Tangent Curve Restoration + Rician Debiasing (Zero Fake Grain)"),
+            ("RAD4AI_SR_15T", "RAD4AI Display Upscale (1.5T Matrix View — Display Only)", 1, 1, "Bicubic matrix upscale + acutance + 2.5D Rician suppression (display/research only)"),
+            ("RAD4AI_3T_HD", "RAD4AI 3T-HD True Anatomy (Anisotropic Tangent-Restore)", 1, 1, "Structure-Tensor Tangent Curve Restoration + Rician Debiasing (display/research only)"),
             ("RAD4AI_PRINT_MASTER", "RAD4AI Print-Master Ultra (Display / Film Print Only)", 1, 1, "Display/Print-only S-curve contrast + zero-grain velvet tissue + zero-floor background"),
-            ("RAD4AI_GE_AW", "RAD4AI GE-AW Workstation (AIR Recon + PURE/SCIC)", 1, 1, "GE AW Workstation Look: AIR Recon DL + PURE/SCIC Coil Equalization + Zero-Floor Background"),
+            ("RAD4AI_GE_AW", "RAD4AI Coil-Equalized Rician Denoise (SCIC + VST)", 1, 1, "Rician-VST + Structure-Tensor denoising with homomorphic coil illumination equalization (SCIC)"),
             ("BASE_MILD", "Conservative Baseline", 1, 1, "Safe baseline reference"),
             ("DENOISE_MEDIUM", "Medium Denoise", 1, 1, "Standard Rician noise reduction"),
             ("EDGE_DENOISE_MILD", "Edge-Preserving Denoise", 1, 1, "Noise reduction with edge protection"),
@@ -375,18 +376,21 @@ def record_pending_sender(ip: str, aet: str, called_aet: str = "") -> None:
         )
 
 
-def enqueue_comparison(series_id: str, profile: str, strength: str = "MEDIUM") -> int:
+def enqueue_comparison(series_id: str, profile: str, strength: str = "MEDIUM", acknowledged: bool = False) -> int:
+    ack_int = 1 if acknowledged else 0
     with connect() as db:
         existing = db.execute(
-            "SELECT id FROM comparison_jobs WHERE source_series_id=? AND profile=? AND strength=? "
+            "SELECT id, acknowledged FROM comparison_jobs WHERE source_series_id=? AND profile=? AND strength=? "
             "AND status IN ('queued','processing','ready') ORDER BY id DESC LIMIT 1",
             (series_id, profile, strength),
         ).fetchone()
         if existing:
+            if ack_int and not existing["acknowledged"]:
+                db.execute("UPDATE comparison_jobs SET acknowledged=1, updated_at=CURRENT_TIMESTAMP WHERE id=?", (existing["id"],))
             return int(existing["id"])
         cursor = db.execute(
-            "INSERT INTO comparison_jobs(source_series_id,profile,strength) VALUES(?,?,?)",
-            (series_id, profile, strength),
+            "INSERT INTO comparison_jobs(source_series_id,profile,strength,acknowledged) VALUES(?,?,?,?)",
+            (series_id, profile, strength, ack_int),
         )
         return int(cursor.lastrowid)
 

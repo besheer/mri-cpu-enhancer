@@ -54,8 +54,9 @@ class ComparisonWorker:
                 self.stop_event.wait(2)
                 continue
             try:
+                job_ack = bool(job["acknowledged"]) if "acknowledged" in job.keys() else False
                 output_id, metrics, qc_status, qc_reasons, center = self._process(
-                    job["source_series_id"], job["profile"], job["strength"]
+                    job["source_series_id"], job["profile"], job["strength"], acknowledged=job_ack
                 )
                 with connect() as db:
                     db.execute("UPDATE comparison_jobs SET status='ready',output_series_id=?,metrics_json=?,qc_status=?,qc_reasons=?,updated_at=CURRENT_TIMESTAMP WHERE id=?",
@@ -83,7 +84,7 @@ class ComparisonWorker:
                     db.execute("UPDATE comparison_jobs SET status='failed',error=?,updated_at=CURRENT_TIMESTAMP WHERE id=?", (str(exc)[:2000], job["id"]))
                     db.execute("UPDATE inbound_series SET status='FAILED',error=?,updated_at=CURRENT_TIMESTAMP WHERE job_id=?", (str(exc)[:2000], job["id"]))
 
-    def _process(self, series_id: str, profile: str, strength: str):
+    def _process(self, series_id: str, profile: str, strength: str, acknowledged: bool = False):
         if profile not in PROFILES:
             raise ValueError("Unknown profile")
         if profile not in enabled_profile_names():
@@ -102,7 +103,7 @@ class ComparisonWorker:
                 if origin.status_code == 200:
                     center = get_center_by_aet(origin.text.strip())
             validate_selection(profile, description, len(info.json().get("Instances", [])),
-                               acknowledged=bool(PROFILE_INFO.get(profile, {}).get("research_only")),
+                               acknowledged=(bool(PROFILE_INFO.get(profile, {}).get("research_only")) or bool(acknowledged)),
                                strength=strength)
             archive = api.get(f"{self.url}/series/{series_id}/archive")
             archive.raise_for_status()

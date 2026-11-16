@@ -261,7 +261,7 @@ class MRIAIEngine:
             # Upscaling to 1024x1024 + Micro-Acutance is restricted strictly to display/research modes
             # (Diagnostic modes preserve exact scanner matrix & PixelSpacing, SwiftMR-compatible)
             h_s, w_s = slice_2d.shape
-            if mode in ("print_master", "3t_hd") and 200 <= h_s <= 512 and 200 <= w_s <= 512:
+            if mode in ("print_master", "3t_hd", "sr_15t") and 200 <= h_s <= 512 and 200 <= w_s <= 512:
                 from scipy.ndimage import zoom as _zoom
                 scale_factor = 4.0 if (h_s <= 256 and w_s <= 256) else 2.0
                 restored = _zoom(restored, scale_factor, order=3)

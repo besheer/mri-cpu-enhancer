@@ -116,3 +116,27 @@ def test_diagnostic_mode_does_not_inject_grain_or_resample() -> None:
     # Display/Print-only mode may upscale 256 -> 1024
     out_print, _ = process_volume(noisy, "RAD4AI_PRINT_MASTER", "MEDIUM", description="AX T2 FSE")
     assert out_print.shape == (2, 1024, 1024)
+
+
+def test_strong_requires_explicit_ack_and_stores_it(tmp_path, monkeypatch) -> None:
+    import pytest
+    import app.store as store
+    from app.profiles import validate_selection
+
+    with pytest.raises(ValueError, match="explicit research acknowledgment"):
+        validate_selection("RICIAN_NLM_VST", "AX T2", 12, acknowledged=False, strength="STRONG")
+    validate_selection("RICIAN_NLM_VST", "AX T2", 12, acknowledged=True, strength="STRONG")
+
+    monkeypatch.setattr(store, "DB_PATH", str(tmp_path / "ack_test.sqlite3"))
+    store.initialize()
+    jid_unacked = store.enqueue_comparison("series-1", "RICIAN_NLM_VST", "MEDIUM", acknowledged=False)
+    jid_acked = store.enqueue_comparison("series-2", "RICIAN_NLM_VST", "STRONG", acknowledged=True)
+    assert store.get_comparison_job(jid_unacked)["acknowledged"] == 0
+    assert store.get_comparison_job(jid_acked)["acknowledged"] == 1
+
+
+def test_sr_15t_is_display_only_and_ge_aw_is_accurately_named() -> None:
+    assert PROFILE_INFO["RAD4AI_SR_15T"]["research_only"] is True
+    assert PROFILE_INFO["RAD4AI_SR_15T"]["auto_eligible"] is False
+    assert "Display" in PROFILE_INFO["RAD4AI_SR_15T"]["label"]
+    assert "SCIC" in PROFILE_INFO["RAD4AI_GE_AW"]["label"]

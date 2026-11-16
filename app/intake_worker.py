@@ -7,7 +7,7 @@ import threading
 import httpx
 
 from app.enhancer import is_derived_series
-from app.profiles import PROFILES
+from app.profiles import PROFILE_INFO, PROFILES
 from app.store import audit, auto_eligible_profile_names, connect, enabled_profile_names, enqueue_comparison, get_center_by_aet, record_feedback, setting
 
 log = logging.getLogger("intake-worker")
@@ -211,13 +211,21 @@ class IntakeWorker:
                         ("RAD4AI_PRINT_MASTER", "MEDIUM"),
                         ("RAD4AI_3T_HD", "STRONG"),
                     ]
-                    job_ids = [enqueue_comparison(sid, p, lvl) for p, lvl in cal_specs]
+                    job_ids = [
+                        enqueue_comparison(
+                            sid,
+                            p,
+                            lvl,
+                            acknowledged=(lvl == "STRONG" or bool(PROFILE_INFO.get(p, {}).get("research_only"))),
+                        )
+                        for p, lvl in cal_specs
+                    ]
                     job_id = job_ids[0]
                     with connect() as db:
                         db.execute("UPDATE inbound_series SET status='QUEUED',job_id=?,updated_at=CURRENT_TIMESTAMP WHERE series_id=?", (job_id, sid))
                     audit("AUTO_CALIBRATION_QUEUED", "series", sid, f"jobs={job_ids};profile={profile}")
                 else:
-                    job_id = enqueue_comparison(sid, profile, strength)
+                    job_id = enqueue_comparison(sid, profile, strength, acknowledged=(strength == "STRONG"))
                     with connect() as db:
                         db.execute("UPDATE inbound_series SET status='QUEUED',job_id=?,updated_at=CURRENT_TIMESTAMP WHERE series_id=?", (job_id, sid))
                     audit("AUTO_ENHANCE_QUEUED", "series", sid, f"job={job_id};profile={profile};strength={strength}")

@@ -68,9 +68,17 @@ class ComparisonWorker:
                         "SELECT 1 FROM protocol_studies WHERE archived=0 AND (standard_series_id=? OR fast_series_id=?) LIMIT 1",
                         (job["source_series_id"], job["source_series_id"]),
                     ).fetchone() is not None
-                if (not protocol_protected and center
-                        and job["profile"] in auto_eligible_profile_names()
+                in_calibration = bool(center["calibration_mode"]) if center and "calibration_mode" in center.keys() else False
+                profile_returnable = (
+                    (job["profile"] in enabled_profile_names())
+                    if in_calibration
+                    else (
+                        job["profile"] in auto_eligible_profile_names()
                         and not PROFILE_INFO.get(job["profile"], {}).get("research_only")
+                    )
+                )
+                if (not protocol_protected and center
+                        and profile_returnable
                         and center["return_policy"] == "AUTO_PASS" and qc_status == "PASS"
                         and center["last_echo_status"] == "PASS"):
                     enqueue_return(job["id"], center["id"], output_id)

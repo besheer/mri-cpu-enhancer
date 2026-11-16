@@ -226,29 +226,19 @@ class MRIAIEngine:
                 fluid_mask = np.clip((enhanced - 0.58) / 0.25, 0.0, 1.0) ** 1.3
                 enhanced = np.clip(enhanced * (1.0 + 0.09 * fluid_mask), 0.0, 1.0)
 
-            # Calibrated Natural Grain + Adaptive Fast-Scan Noise Suppression (film print stays silky clean)
-            fast_scan_scale = 0.65 if global_sigma >= 0.032 else 1.0
-            if mode == "print_master":
-                grain_ratio = 0.03
-            elif strength <= 0.6:  # MILD / L1
-                if seq_type in ("T2_FSE", "T2_STAR_GRE"):
-                    grain_ratio = 0.28
-                elif seq_type == "STIR_FLAIR":
-                    grain_ratio = 0.27
-                elif seq_type == "T1_SE":
-                    grain_ratio = 0.26
+            # Calibrated Natural Grain is strictly forbidden in diagnostic modes (zero synthetic/re-injected noise).
+            # Only display/print-only modes may retain subtle organic residual texture.
+            if mode in ("print_master", "3t_hd"):
+                fast_scan_scale = 0.65 if global_sigma >= 0.032 else 1.0
+                if mode == "print_master":
+                    grain_ratio = 0.03
                 else:
-                    grain_ratio = 0.22
-            elif strength <= 0.85:  # MEDIUM / L2
-                base_g = 0.16 if seq_type in ("T2_FSE", "T2_STAR_GRE", "STIR_FLAIR", "T1_SE") else 0.13
-                grain_ratio = base_g * fast_scan_scale
-            else:  # STRONG / L3 (PD/STIR extra organic texture: 26% normal / ~21% fast; T2/T1: 24% / ~19%)
-                fast_l3_scale = 0.80 if global_sigma >= 0.032 else 1.0
-                base_g = 0.26 if seq_type in ("PD_ORTHO", "STIR_FLAIR") else 0.24 if seq_type in ("T2_FSE", "T2_STAR_GRE", "T1_SE") else 0.20
-                grain_ratio = base_g * fast_l3_scale
-            texture_residual = norm_work - enhanced
-            tissue_mask = np.clip(norm_work / 0.08, 0.0, 1.0)
-            enhanced = np.clip(enhanced + (grain_ratio * tissue_mask) * texture_residual, 0.0, 1.0)
+                    fast_l3_scale = 0.80 if global_sigma >= 0.032 else 1.0
+                    base_g = 0.14 if seq_type in ("PD_ORTHO", "STIR_FLAIR") else 0.12
+                    grain_ratio = base_g * fast_l3_scale
+                texture_residual = norm_work - enhanced
+                tissue_mask = np.clip(norm_work / 0.08, 0.0, 1.0)
+                enhanced = np.clip(enhanced + (grain_ratio * tissue_mask) * texture_residual, 0.0, 1.0)
 
             # Display-only Film S-Curve is applied ONLY in print_master mode (never in diagnostic modes!)
             if mode == "print_master":
@@ -268,9 +258,10 @@ class MRIAIEngine:
             overflow = np.maximum(vol_f[i] - vol_high, 0.0)
             restored = enhanced * vol_span + vol_low + overflow
 
-            # Auto-upscale all clinical scans to 1024x1024 + Post-Upscale Micro-Acutance to remove bicubic softness
+            # Upscaling to 1024x1024 + Micro-Acutance is restricted strictly to display/research modes
+            # (Diagnostic modes preserve exact scanner matrix & PixelSpacing, SwiftMR-compatible)
             h_s, w_s = slice_2d.shape
-            if 200 <= h_s <= 512 and 200 <= w_s <= 512:
+            if mode in ("print_master", "3t_hd") and 200 <= h_s <= 512 and 200 <= w_s <= 512:
                 from scipy.ndimage import zoom as _zoom
                 scale_factor = 4.0 if (h_s <= 256 and w_s <= 256) else 2.0
                 restored = _zoom(restored, scale_factor, order=3)

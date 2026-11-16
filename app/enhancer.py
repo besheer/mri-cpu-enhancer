@@ -69,7 +69,7 @@ DERIVED_TAGS = (
 def is_derived_series(description: str) -> bool:
     u = (description or "").upper().strip()
     has_tag = any(tag in u for tag in DERIVED_TAGS)
-    return u.startswith("ENHANC-") or has_tag
+    return u.startswith(("ENHANC-", "ENH-L")) or has_tag
 
 
 def derived_series_description(original: str, prefix: str = DEFAULT_PREFIX) -> str:

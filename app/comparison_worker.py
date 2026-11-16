@@ -68,8 +68,8 @@ class ComparisonWorker:
                         (job["source_series_id"], job["source_series_id"]),
                     ).fetchone() is not None
                 if (not protocol_protected and center
-                        and (job["profile"] in auto_eligible_profile_names() or job["profile"] in enabled_profile_names())
-                        
+                        and job["profile"] in auto_eligible_profile_names()
+                        and not PROFILE_INFO.get(job["profile"], {}).get("research_only")
                         and center["return_policy"] == "AUTO_PASS" and qc_status == "PASS"
                         and center["last_echo_status"] == "PASS"):
                     enqueue_return(job["id"], center["id"], output_id)
@@ -102,7 +102,7 @@ class ComparisonWorker:
                 if origin.status_code == 200:
                     center = get_center_by_aet(origin.text.strip())
             validate_selection(profile, description, len(info.json().get("Instances", [])),
-                               acknowledged=(bool(PROFILE_INFO.get(profile, {}).get("research_only")) or strength == "STRONG"),
+                               acknowledged=bool(PROFILE_INFO.get(profile, {}).get("research_only")),
                                strength=strength)
             archive = api.get(f"{self.url}/series/{series_id}/archive")
             archive.raise_for_status()

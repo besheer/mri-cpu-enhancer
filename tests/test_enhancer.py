@@ -91,3 +91,7 @@ def test_derived_series_is_detected() -> None:
     assert is_derived_series("AX T2 FSE") is False
     assert is_derived_series("ENH STIR") is False
     assert is_derived_series("ENH AX T2 [ENHANCED]") is True
+    for lvl in ("L1-SOFT", "L2-BALANCED", "L3-CRISP", "L4-PRINT", "L5-AI3T"):
+        cal_desc = derived_series_description("AX T2", f"{lvl}-ENHANC-RNLM-")
+        assert cal_desc.startswith("ENH-L")
+        assert is_derived_series(cal_desc) is True

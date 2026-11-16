@@ -102,3 +102,17 @@ def test_local_physics_audit_never_imports_or_calls_network(monkeypatch) -> None
     assert "quantitative_metrics" in audit_res
     assert "preliminary_findings" not in audit_res
     assert audit_res["verdict"] in {"PASS", "WARN"}
+
+
+def test_diagnostic_mode_does_not_inject_grain_or_resample() -> None:
+    clean = make_phantom(2, 256)
+    noisy = corrupt_volume(clean, "RICIAN_NOISE", "MEDIUM", seed=19)
+    for prof in ("RICIAN_NLM_VST", "RAD4AI_SPINE_PRO"):
+        out, metrics = process_volume(noisy, prof, "MEDIUM", description="AX T2 FSE")
+        assert out.shape == noisy.shape, f"{prof} must preserve original 256x256 matrix"
+        assert float(metrics["noise_after"]) < float(metrics["noise_before"])
+        assert float(metrics["noise_change_percent"]) < -10.0
+
+    # Display/Print-only mode may upscale 256 -> 1024
+    out_print, _ = process_volume(noisy, "RAD4AI_PRINT_MASTER", "MEDIUM", description="AX T2 FSE")
+    assert out_print.shape == (2, 1024, 1024)

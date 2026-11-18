@@ -76,21 +76,52 @@ def render_before_after_png(source_series_id: str, output_series_id: str) -> byt
     orthanc_url = os.getenv("ORTHANC_URL", "http://orthanc:8042").rstrip("/")
     auth = (os.getenv("ORTHANC_USERNAME", "admin"), os.getenv("ORTHANC_PASSWORD", ""))
 
-    def _mid_slice(sid: str) -> np.ndarray:
-        with httpx.Client(auth=auth, timeout=20) as api:
-            s_info = api.get(f"{orthanc_url}/series/{sid}")
-            s_info.raise_for_status()
-            insts = s_info.json().get("Instances", [])
-            if not insts:
-                raise ValueError("Empty series")
-            mid = insts[len(insts) // 2]
-            raw = api.get(f"{orthanc_url}/instances/{mid}/file")
-            raw.raise_for_status()
-            ds = pydicom.dcmread(io.BytesIO(raw.content))
-            return ds.pixel_array.astype(np.float32)
+    def _ordered_instances(api: httpx.Client, sid: str) -> list[str]:
+        r_ord = api.get(f"{orthanc_url}/series/{sid}/ordered-slices")
+        if r_ord.status_code == 200:
+            slices = r_ord.json().get("SlicesShort", [])
+            if slices:
+                return [s[0] for s in slices]
+        s_info = api.get(f"{orthanc_url}/series/{sid}")
+        s_info.raise_for_status()
+        return s_info.json().get("Instances", [])
 
-    src_arr = _mid_slice(source_series_id)
-    dst_arr = _mid_slice(output_series_id)
+    def _read_inst(api: httpx.Client, iid: str) -> np.ndarray:
+        raw = api.get(f"{orthanc_url}/instances/{iid}/file")
+        raw.raise_for_status()
+        return pydicom.dcmread(io.BytesIO(raw.content)).pixel_array.astype(np.float32)
+
+    with httpx.Client(auth=auth, timeout=30) as api:
+        src_insts = _ordered_instances(api, source_series_id)
+        dst_insts = _ordered_instances(api, output_series_id)
+        if not src_insts or not dst_insts:
+            raise ValueError("Empty series")
+
+        n = len(src_insts)
+        lo_idx = n // 4 if n >= 4 else 0
+        hi_idx = max(lo_idx + 1, (3 * n) // 4) if n >= 4 else n
+        candidates = list(range(lo_idx, hi_idx))
+        if len(candidates) > 7:
+            step = max(1, len(candidates) // 7)
+            candidates = candidates[::step]
+
+        best_idx = n // 2
+        best_score = -1.0
+        src_arr = None
+        for idx in candidates:
+            arr = _read_inst(api, src_insts[idx])
+            sm = gaussian_filter(arr, sigma=1.0)
+            edge_e = float(np.mean(np.hypot(sobel(sm, axis=0), sobel(sm, axis=1))))
+            score = edge_e * float(np.std(arr))
+            if score > best_score:
+                best_score = score
+                best_idx = idx
+                src_arr = arr
+
+        if src_arr is None:
+            src_arr = _read_inst(api, src_insts[best_idx])
+        dst_idx = min(best_idx, len(dst_insts) - 1)
+        dst_arr = _read_inst(api, dst_insts[dst_idx])
     if dst_arr.shape != src_arr.shape:
         src_arr = zoom(src_arr, (dst_arr.shape[0] / src_arr.shape[0], dst_arr.shape[1] / src_arr.shape[1]), order=1)
 

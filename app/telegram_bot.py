@@ -1,13 +1,16 @@
 from __future__ import annotations
 
+import io
 import json
 import logging
 import os
 import threading
-import time
+from pathlib import Path
 from typing import Any
 
 import httpx
+import numpy as np
+from scipy.ndimage import gaussian_filter, sobel
 
 from app.store import (
     audit,
@@ -21,29 +24,6 @@ from app.store import (
 )
 
 log = logging.getLogger("telegram-bot")
-
-
-def _detect_verdict_and_level(text: str) -> tuple[str, str]:
-    u = text.upper()
-    level = (
-        "L1-SOFT" if ("L1" in u or "المستوى 1" in text or "الاول" in text)
-        else "L2-BALANCED" if ("L2" in u or "المستوى 2" in text or "الثاني" in text)
-        else "L3-CRISP" if ("L3" in u or "المستوى 3" in text or "الثالث" in text)
-        else "L4-PRINT" if ("L4" in u or "طباع" in text or "PRINT" in u)
-        else "L5-AI3T" if ("L5" in u or "3T" in u)
-        else ""
-    )
-    verdict = (
-        "APPROVED" if any(k in text for k in ("موافق", "مقبول", "ممتاز", "تمام", "ثبت", "كويس")) or "ACCEPT" in u or "OK" in u
-        else "MORE_GRAIN" if any(k in text for k in ("خشون", "خشن")) or "GRAIN" in u
-        else "SMOOTHER" if any(k in text for k in ("ناعم", "تنعيم")) or "SMOOTH" in u
-        else "BRIGHTER_T2" if any(k in text for k in ("سوائل", "ابيض", "تباين")) or "BRIGHT" in u
-        else "REJECT" if any(k in text for k in ("مرفوض", "رفض", "سيء", "بايظ")) or "REJECT" in u
-        else "NOTE"
-    )
-    return verdict, level
-
-
 
 
 def _register_chat(chat_id: int) -> None:
@@ -83,6 +63,47 @@ def send_telegram_notification(text: str) -> int:
             except Exception:
                 pass
     return sent
+
+
+def _detect_verdict_and_level(text: str) -> tuple[str, str]:
+    u = text.upper()
+    level = (
+        "L1-SOFT" if ("L1" in u or "المستوى 1" in text or "الاول" in text)
+        else "L2-BALANCED" if ("L2" in u or "المستوى 2" in text or "الثاني" in text)
+        else "L3-CRISP" if ("L3" in u or "المستوى 3" in text or "الثالث" in text)
+        else "L4-PRINT" if ("L4" in u or "طباع" in text or "PRINT" in u)
+        else "L5-AI3T" if ("L5" in u or "3T" in u)
+        else ""
+    )
+    verdict = (
+        "APPROVED" if any(k in text for k in ("موافق", "مقبول", "ممتاز", "تمام", "ثبت", "كويس")) or "ACCEPT" in u or "OK" in u
+        else "MORE_GRAIN" if any(k in text for k in ("خشون", "خشن")) or "GRAIN" in u
+        else "SMOOTHER" if any(k in text for k in ("ناعم", "تنعيم")) or "SMOOTH" in u
+        else "BRIGHTER_T2" if any(k in text for k in ("سوائل", "ابيض", "تباين")) or "BRIGHT" in u
+        else "REJECT" if any(k in text for k in ("مرفوض", "رفض", "سيء", "بايظ")) or "REJECT" in u
+        else "NOTE"
+    )
+    return verdict, level
+
+
+def _analyze_reference_image(img_path: Path) -> dict[str, float]:
+    import SimpleITK as sitk
+    raw = sitk.GetArrayFromImage(sitk.ReadImage(str(img_path))).astype(np.float32)
+    arr = raw.mean(axis=-1) if raw.ndim == 3 else raw
+    arr = arr / max(float(arr.max()), 1.0)
+    smooth = gaussian_filter(arr, sigma=1.0)
+    gx, gy = sobel(smooth, axis=1), sobel(smooth, axis=0)
+    edge_energy = float(np.mean(np.hypot(gx, gy)))
+    noise_est = float(np.std(arr - smooth))
+    p10, p95 = float(np.percentile(arr, 10)), float(np.percentile(arr, 95))
+    return {
+        "width": float(arr.shape[1]),
+        "height": float(arr.shape[0]),
+        "edge_energy": round(edge_energy, 4),
+        "noise_est": round(noise_est, 4),
+        "contrast_span": round(p95 - p10, 4),
+        "bg_floor_p10": round(p10, 4),
+    }
 
 
 class TelegramBotWorker:
@@ -134,11 +155,21 @@ class TelegramBotWorker:
                     {"text": "📋 آخر التقييمات", "callback_data": "feedbacks"},
                 ],
                 [
+                    {"text": "🟢 قوة MILD (L1)", "callback_data": "str_MILD"},
+                    {"text": "🟡 قوة MEDIUM (L2)", "callback_data": "str_MEDIUM"},
+                    {"text": "🔴 قوة STRONG (L3)", "callback_data": "str_STRONG"},
+                ],
+                [
+                    {"text": "🦴 SPINE/ORTHO", "callback_data": "prof_RAD4AI_SPINE_PRO"},
+                    {"text": "🧠 BRAIN RICIAN", "callback_data": "prof_RICIAN_NLM_VST"},
+                ],
+                [
                     {"text": "🎛️ تفعيل الـ 5 مستويات", "callback_data": "cal_on"},
                     {"text": "🔒 نسخة واحدة فقط", "callback_data": "cal_off"},
                 ],
                 [
-                    {"text": "📤 إرسال بطاقات التقييم لـ GE", "callback_data": "send_cards"},
+                    {"text": "📤 بطاقات GE", "callback_data": "send_cards"},
+                    {"text": "📸 مقارنة صورة مرجعية", "callback_data": "ref_guide"},
                 ],
             ]
         }
@@ -147,6 +178,7 @@ class TelegramBotWorker:
         c = get_center(8)
         cal = bool(c and c["calibration_mode"])
         strength = c["auto_strength"] if c else "STRONG"
+        prof = c["auto_profile"] if c else "RAD4AI_SPINE_PRO"
         with connect() as db:
             job = db.execute(
                 "SELECT cj.id, cj.profile, cj.strength, cj.status, cj.qc_status, cj.updated_at, "
@@ -164,8 +196,8 @@ class TelegramBotWorker:
         r_txt = f"#{ret['id']} (Job #{ret['comparison_job_id']}): {ret['status']} @ {ret['updated_at']}" if ret else "لا يوجد"
         return (
             "🖥️ *حالة سيرفر RAD4AI*\n"
+            f"• البروفايل: `{prof}` | القوة: *{strength}*\n"
             f"• وضع المعايرة (5 مستويات): *{'مفعّل 🟢' if cal else 'متوقف (نسخة واحدة) ⚪'}*\n"
-            f"• القوة الافتراضية: *{strength}*\n"
             f"• آخر معالجة: `{j_txt}`\n"
             f"• آخر إرسال لـ GE: `{r_txt}`"
         )
@@ -193,6 +225,18 @@ class TelegramBotWorker:
             reply = self._format_status()
         elif data == "feedbacks":
             reply = self._format_feedbacks()
+        elif data.startswith("str_"):
+            new_str = data[4:]
+            with connect() as db:
+                db.execute("UPDATE centers SET auto_strength=? WHERE id=8", (new_str,))
+            audit("TELEGRAM_STRENGTH_CHANGED", "center", "8", f"strength={new_str};chat={chat_id}")
+            reply = f"✅ تم تغيير قوة التحسين الافتراضية للمركز إلى: *{new_str}*"
+        elif data.startswith("prof_"):
+            new_prof = data[5:]
+            with connect() as db:
+                db.execute("UPDATE centers SET auto_profile=? WHERE id=8", (new_prof,))
+            audit("TELEGRAM_PROFILE_CHANGED", "center", "8", f"profile={new_prof};chat={chat_id}")
+            reply = f"✅ تم تغيير البروفايل الافتراضي للمركز إلى: `{new_prof}`"
         elif data == "cal_on":
             set_center_calibration(8, True)
             audit("TELEGRAM_CALIBRATION_ON", "center", "8", f"chat={chat_id}")
@@ -208,9 +252,68 @@ class TelegramBotWorker:
                 reply = f"📤 تم إرسال {res['sent_cards']} بطاقات تقييم إلى `{res['destination']}` بنجاح."
             except Exception as exc:
                 reply = f"❌ تعذر إرسال البطاقات: {exc}"
+        elif data == "ref_guide":
+            reply = (
+                "📸 *إرسال نموذج/صورة مرجعية للمقارنة:*\n"
+                "أرسل أي صورة (أو ملف صورة) هنا على التليجرام، واكتب معها نوع الفحص "
+                "(مثلاً: `MRV` أو `T2 Knee` أو `STIR` أو `PD`) —\n"
+                "سيقوم البوت بتحليل حدة وتباين وضوضاء الصورة المرجعية ومقارنتها فوراً بآخر فحص مرسل وحفظها للمراجعة."
+            )
         else:
             reply = "أمر غير معروف."
 
+        self._api(
+            client,
+            "sendMessage",
+            {"chat_id": chat_id, "text": reply, "parse_mode": "Markdown", "reply_markup": self._menu_keyboard()},
+        )
+
+    def _download_and_compare_photo(self, client: httpx.Client, chat_id: int, sender: str, file_id: str, caption: str) -> None:
+        finfo = self._api(client, "getFile", {"file_id": file_id})
+        fpath = finfo["result"]["file_path"]
+        dl = client.get(f"https://api.telegram.org/file/bot{self.token}/{fpath}", timeout=30)
+        dl.raise_for_status()
+        ref_dir = Path("/var/lib/enhancer/telegram_refs")
+        ref_dir.mkdir(parents=True, exist_ok=True)
+        saved_path = ref_dir / f"ref_{chat_id}_{Path(fpath).name}"
+        saved_path.write_bytes(dl.content)
+
+        ref_stats = _analyze_reference_image(saved_path)
+        with connect() as db:
+            last_job = db.execute(
+                "SELECT cj.id, cj.profile, cj.strength, cj.metrics_json, COALESCE(ib.description,'') AS desc "
+                "FROM comparison_jobs cj LEFT JOIN inbound_series ib ON ib.series_id=cj.source_series_id "
+                "WHERE cj.status='ready' ORDER BY cj.id DESC LIMIT 1"
+            ).fetchone()
+
+        verdict, level = _detect_verdict_and_level(caption or "صورة مرجعية للمقارنة")
+        fid = record_feedback(
+            source="telegram_ref",
+            patient_name=sender,
+            study_description=caption or "Reference Sample",
+            series_description=str(saved_path.name),
+            level=level,
+            verdict=verdict,
+            note=f"{caption or 'Reference Sample'} | stats={json.dumps(ref_stats)}",
+            source_aet=f"tg:{chat_id}",
+        )
+        audit("TELEGRAM_REF_RECEIVED", "feedback", str(fid), f"file={saved_path.name};chat={chat_id}")
+
+        last_line = ""
+        if last_job:
+            m = json.loads(last_job["metrics_json"] or "{}")
+            last_line = (
+                f"\n• مقارنة بآخر فحص مرسل (`#{last_job['id']} {last_job['desc']}`):\n"
+                f"  حواف المرسل: `{m.get('edge_preservation_percent', '-')}%` | تغير الضوضاء: `{m.get('noise_change_percent', '-')}%`"
+            )
+
+        reply = (
+            f"📸 *تم استلام الصورة المرجعية وحفظها برقم `#{fid}`*\n"
+            f"• النوع/الملاحظة: `{caption or 'بدون وصف'}`\n"
+            f"• الأبعاد: `{int(ref_stats['width'])}×{int(ref_stats['height'])}`\n"
+            f"• حدة الحواف: `{ref_stats['edge_energy']}` | التباين: `{ref_stats['contrast_span']}` | الضوضاء: `{ref_stats['noise_est']}`"
+            f"{last_line}"
+        )
         self._api(
             client,
             "sendMessage",
@@ -222,17 +325,20 @@ class TelegramBotWorker:
         _register_chat(int(chat_id))
         sender = msg.get("from", {}).get("first_name", "") or msg.get("from", {}).get("username", "tech")
         text = (msg.get("text") or msg.get("caption") or "").strip()
+
+        if msg.get("photo"):
+            largest = msg["photo"][-1]
+            self._download_and_compare_photo(client, chat_id, sender, largest["file_id"], text)
+            return
+
         if not text:
-            if msg.get("photo"):
-                text = "[صورة مرسلة من الفني بدون نص]"
-            else:
-                return
+            return
 
         if text.startswith("/start") or text.startswith("/help"):
             welcome = (
                 "👋 أهلاً بك في *RAD4AI MRI Bot*!\n"
-                "أرسل أي ملاحظة أو طلب تعديل للفني (عربي أو إنجليزي)، وسأحفظه وأربطه بآخر فحص فوراً، "
-                "أو استخدم الأزرار التالية:"
+                "• تحكم في جودة الصور (القوة / البروفايل / وضع الـ 5 مستويات) من الأزرار بالأسفل.\n"
+                "• أرسل أي ملاحظة أو صورة مرجعية مع نوع الفحص لمقارنتها وحفظها فوراً."
             )
             self._api(
                 client,

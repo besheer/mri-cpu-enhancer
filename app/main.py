@@ -26,11 +26,13 @@ from app.synthetic import router as synthetic_router
 from app.protocol_study import router as protocol_study_router
 from app.print_studio import router as print_studio_router
 from app.feedback import router as feedback_router
+from app.telegram_bot import TelegramBotWorker
 
 worker = AutoProcessor()
 comparison_worker = ComparisonWorker()
 return_worker = ReturnWorker()
 intake_worker = IntakeWorker()
+telegram_bot = TelegramBotWorker()
 
 
 @asynccontextmanager
@@ -40,9 +42,11 @@ async def lifespan(_: FastAPI):
     comparison_worker.start()
     return_worker.start()
     intake_worker.start()
+    telegram_bot.start()
     yield
     comparison_worker.stop()
     return_worker.stop()
+    telegram_bot.stop()
     intake_worker.stop()
     worker.stop()
 
@@ -67,7 +71,7 @@ def health() -> dict[str, object]:
     return {"status": "degraded" if worker.last_error or intake_worker.last_error else "ok",
             "mode": "research-cpu-baseline", "worker": worker.status(),
             "intake_worker": intake_worker.status(),
-            "return_worker": return_worker.status(), "system": snapshot()}
+            "return_worker": return_worker.status(), "telegram_bot": telegram_bot.status(), "system": snapshot()}
 
 
 @app.get("/internal/dicom-authorize", response_class=PlainTextResponse, include_in_schema=False)

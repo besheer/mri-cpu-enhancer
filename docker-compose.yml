@@ -19,6 +19,7 @@ services:
       ENHANC_PREFIX: "${ENHANC_PREFIX:-ENHANC-}"
       OHIF_PUBLIC_URL: "${OHIF_PUBLIC_URL:-/ohif/viewer}"
       APP_DB: "/var/lib/enhancer/enhancer.sqlite3"
+      TELEGRAM_BOT_TOKEN: "${TELEGRAM_BOT_TOKEN:-}"
     volumes:
       - enhancer-data:/var/lib/enhancer
       - ./datasets:/datasets:ro

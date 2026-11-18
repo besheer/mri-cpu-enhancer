@@ -128,7 +128,7 @@ def feedback_page(saved: int = 0):
     rows_html = ""
     for item in items:
         v_text = VERDICT_LABELS.get(item["verdict"], item["verdict"])
-        src_badge = "🖥️ GE DICOM" if item["source"] == "ge_dicom" else "🌐 صفحة التقييم"
+        src_badge = "📱 Telegram" if item["source"] == "telegram" else "🖥️ GE DICOM" if item["source"] == "ge_dicom" else "🌐 صفحة التقييم"
         rows_html += f"""
         <tr>
           <td>#{item['id']}</td>

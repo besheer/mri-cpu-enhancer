@@ -207,6 +207,108 @@ def send_before_after_to_telegram(
     return sent
 
 
+
+
+def enhance_slice_with_gemini(source_series_id: str) -> tuple[bytes, int]:
+    import base64
+    import tempfile
+    import pydicom
+    import SimpleITK as sitk
+    from scipy.ndimage import zoom
+
+    api_key = os.getenv("GEMINI_API_KEY", "").strip()
+    if not api_key:
+        raise RuntimeError("GEMINI_API_KEY is not configured")
+
+    orthanc_url = os.getenv("ORTHANC_URL", "http://orthanc:8042").rstrip("/")
+    auth = (os.getenv("ORTHANC_USERNAME", "admin"), os.getenv("ORTHANC_PASSWORD", ""))
+
+    with httpx.Client(auth=auth, timeout=30) as api:
+        r = api.get(f"{orthanc_url}/series/{source_series_id}/instances")
+        r.raise_for_status()
+        items = []
+        for inst in r.json():
+            try:
+                num = int(str(inst.get("MainDicomTags", {}).get("InstanceNumber", "0")).strip() or 0)
+            except ValueError:
+                num = 0
+            items.append((num, inst["ID"]))
+        items.sort(key=lambda x: x[0])
+        if not items:
+            raise ValueError("Empty series")
+        n = len(items)
+        lo_idx = n // 4 if n >= 4 else 0
+        hi_idx = max(lo_idx + 1, (3 * n) // 4) if n >= 4 else n
+        cands = list(range(lo_idx, hi_idx))
+        if len(cands) > 7:
+            cands = cands[:: max(1, len(cands) // 7)]
+        best_arr, best_num, best_score = None, items[n // 2][0], -1.0
+        for idx in cands:
+            num, iid = items[idx]
+            raw = api.get(f"{orthanc_url}/instances/{iid}/file")
+            raw.raise_for_status()
+            ds = pydicom.dcmread(io.BytesIO(raw.content))
+            arr = ds.pixel_array.astype(np.float32)
+            sm = gaussian_filter(arr, sigma=1.0)
+            score = float(np.mean(np.hypot(sobel(sm, axis=0), sobel(sm, axis=1)))) * float(np.std(arr))
+            if score > best_score:
+                best_score, best_arr = score, arr
+                best_num = int(getattr(ds, "InstanceNumber", 0) or num)
+
+    lo = float(np.percentile(best_arr, 1.0))
+    hi = max(float(np.percentile(best_arr, 99.5)), lo + 1.0)
+    src_u8 = np.clip((best_arr - lo) / (hi - lo) * 255.0, 0, 255).astype(np.uint8)
+
+    with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp_in:
+        in_path = tmp_in.name
+    with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp_out:
+        out_path = tmp_out.name
+    with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp_comb:
+        comb_path = tmp_comb.name
+    try:
+        sitk.WriteImage(sitk.GetImageFromArray(src_u8), in_path)
+        b64_in = base64.b64encode(Path(in_path).read_bytes()).decode("ascii")
+        prompt = (
+            "Enhance this 0.3T MRI grayscale slice to have the crisp clarity, clean denoising, and balanced contrast "
+            "of a high-field 3T MRI while strictly preserving every anatomical structure, bone, disc, vessel, and nerve "
+            "without adding or removing anything. Output a pure grayscale MRI image with no text overlays."
+        )
+        payload = {
+            "contents": [{"parts": [{"text": prompt}, {"inlineData": {"mimeType": "image/png", "data": b64_in}}]}],
+            "generationConfig": {"responseModalities": ["IMAGE", "TEXT"]},
+        }
+        resp = httpx.post(
+            f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-image:generateContent?key={api_key}",
+            json=payload,
+            timeout=90,
+        )
+        resp.raise_for_status()
+        gem_bytes = None
+        for cand in resp.json().get("candidates", []):
+            for part in cand.get("content", {}).get("parts", []):
+                idata = part.get("inlineData") or part.get("inline_data")
+                if idata and idata.get("data"):
+                    gem_bytes = base64.b64decode(idata["data"])
+                    break
+            if gem_bytes:
+                break
+        if not gem_bytes:
+            raise RuntimeError("Gemini did not return an image")
+        Path(out_path).write_bytes(gem_bytes)
+        gem_raw = sitk.GetArrayFromImage(sitk.ReadImage(out_path)).astype(np.float32)
+        gem_gray = gem_raw.mean(axis=-1) if gem_raw.ndim == 3 else gem_raw
+        gem_u8 = np.clip(gem_gray, 0, 255).astype(np.uint8)
+        if gem_u8.shape != src_u8.shape:
+            gem_u8 = zoom(gem_u8.astype(np.float32), (src_u8.shape[0] / gem_u8.shape[0], src_u8.shape[1] / gem_u8.shape[1]), order=1).astype(np.uint8)
+        divider = np.full((src_u8.shape[0], 4), 220, dtype=np.uint8)
+        combined = np.concatenate([src_u8, divider, gem_u8], axis=1)
+        sitk.WriteImage(sitk.GetImageFromArray(combined), comb_path)
+        return Path(comb_path).read_bytes(), best_num
+    finally:
+        for fp in (in_path, out_path, comb_path):
+            Path(fp).unlink(missing_ok=True)
+
+
 def _detect_verdict_and_level(text: str) -> tuple[str, str]:
     u = text.upper()
     level = (
@@ -323,8 +425,11 @@ class TelegramBotWorker:
                     {"text": "🔄 إعادة إرسال آخر فحص لـ GE", "callback_data": "reprocess_last"},
                 ],
                 [
-                    {"text": "📤 بطاقات GE", "callback_data": "send_cards"},
+                    {"text": "✨ تحسين خارجي (Gemini AI)", "callback_data": "gemini_enhance"},
                     {"text": "📸 مقارنة صورة مرجعية", "callback_data": "ref_guide"},
+                ],
+                [
+                    {"text": "📤 بطاقات GE", "callback_data": "send_cards"},
                 ],
 
             ]
@@ -508,6 +613,34 @@ class TelegramBotWorker:
                     )
                 else:
                     reply = "لا توجد سلسلة سابقة لإعادة معالجتها."
+        elif data == "gemini_enhance":
+            with connect() as db:
+                j = db.execute(
+                    "SELECT cj.id, cj.source_series_id, COALESCE(ib.description,'') AS desc "
+                    "FROM comparison_jobs cj LEFT JOIN inbound_series ib ON ib.series_id=cj.source_series_id "
+                    "ORDER BY cj.id DESC LIMIT 1"
+                ).fetchone()
+            if j:
+                try:
+                    self._api(client, "sendMessage", {"chat_id": chat_id, "text": "⏳ جاري التحسين الخارجي عبر Gemini AI (للعرض فقط)..."})
+                    png_bytes, slice_num = enhance_slice_with_gemini(j["source_series_id"])
+                    cap = (
+                        f"✨ *تحسين خارجي (Gemini AI) — قبل (يسار) | بعد (يمين)*\n"
+                        f"• السلسلة: `{j['desc'] or '-'}` (`#{j['id']}`) | شريحة `#{slice_num}`\n"
+                        "⚠️ *للعرض والمقارنة البصرية فقط — لا يُستخدم للتشخيص ولا يُرسل للـ PACS.*"
+                    )
+                    client.post(
+                        f"https://api.telegram.org/bot{self.token}/sendPhoto",
+                        data={"chat_id": str(chat_id), "caption": cap, "parse_mode": "Markdown"},
+                        files={"photo": ("gemini_before_after.png", png_bytes, "image/png")},
+                        timeout=30,
+                    )
+                    audit("TELEGRAM_GEMINI_ENHANCE", "comparison_job", str(j["id"]), f"chat={chat_id}")
+                    return
+                except Exception as exc:
+                    reply = f"❌ تعذر التحسين الخارجي عبر Gemini: {exc}"
+            else:
+                reply = "لا توجد سلسلة متاحة للتحسين الخارجي."
         elif data == "ref_guide":
             reply = (
                 "📸 *إرسال نموذج/صورة مرجعية للمقارنة:*\n"

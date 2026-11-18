@@ -65,7 +65,8 @@ class MRIAIEngine:
             return "ANGIO_MRV"
         if "PD" in u or "PROTON" in u:
             return "PD_ORTHO"
-        if any(k in u for k in ("STIR", "FLAIR", "FAT", "SPAIR", "FATSAT")) or " FS" in u or "_FS" in u or "-FS" in u:
+        import re as _re
+        if any(k in u for k in ("STIR", "FLAIR", "FAT", "SPAIR", "FATSAT")) or _re.search(r"(?:^|[\s_\-/])FS(?:$|[\s_\-/])", u):
             return "STIR_FLAIR"
         if "T2*" in u or "GRE" in u or "FE" in u:
             return "T2_STAR_GRE"

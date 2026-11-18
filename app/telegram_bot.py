@@ -102,41 +102,44 @@ def render_before_after_png(source_series_id: str, output_series_id: str, slice_
         dst_items = _instances_by_num(api, output_series_id)
         if not src_items or not dst_items:
             raise ValueError("Empty series")
+        src_by_num = {num: iid for num, iid in src_items}
         dst_by_num = {num: iid for num, iid in dst_items}
+        common_nums = sorted(set(src_by_num.keys()) & set(dst_by_num.keys()))
 
-        n = len(src_items)
-        if slice_index is not None:
-            best_idx = max(0, min(n - 1, int(slice_index)))
-            src_arr, d_num = _read_inst(api, src_items[best_idx][1])
-            chosen_num = d_num or src_items[best_idx][0]
+        if common_nums:
+            n = len(common_nums)
+            if slice_index is not None:
+                best_idx = max(0, min(n - 1, int(slice_index)))
+                chosen_num = common_nums[best_idx]
+                src_arr, _ = _read_inst(api, src_by_num[chosen_num])
+            else:
+                lo_idx = n // 4 if n >= 4 else 0
+                hi_idx = max(lo_idx + 1, (3 * n) // 4) if n >= 4 else n
+                candidates = list(range(lo_idx, hi_idx))
+                if len(candidates) > 7:
+                    candidates = candidates[:: max(1, len(candidates) // 7)]
+                best_idx = n // 2
+                best_score = -1.0
+                src_arr = None
+                chosen_num = common_nums[best_idx]
+                for idx in candidates:
+                    num = common_nums[idx]
+                    arr, _ = _read_inst(api, src_by_num[num])
+                    sm = gaussian_filter(arr, sigma=1.0)
+                    score = float(np.mean(np.hypot(sobel(sm, axis=0), sobel(sm, axis=1)))) * float(np.std(arr))
+                    if score > best_score:
+                        best_score = score
+                        best_idx = idx
+                        src_arr = arr
+                        chosen_num = num
+                if src_arr is None:
+                    src_arr, _ = _read_inst(api, src_by_num[chosen_num])
+            dst_arr, _ = _read_inst(api, dst_by_num[chosen_num])
         else:
-            lo_idx = n // 4 if n >= 4 else 0
-            hi_idx = max(lo_idx + 1, (3 * n) // 4) if n >= 4 else n
-            candidates = list(range(lo_idx, hi_idx))
-            if len(candidates) > 7:
-                step = max(1, len(candidates) // 7)
-                candidates = candidates[::step]
-
-            best_idx = n // 2
-            best_score = -1.0
-            src_arr = None
-            chosen_num = src_items[best_idx][0]
-            for idx in candidates:
-                num, iid = src_items[idx]
-                arr, d_num = _read_inst(api, iid)
-                sm = gaussian_filter(arr, sigma=1.0)
-                edge_e = float(np.mean(np.hypot(sobel(sm, axis=0), sobel(sm, axis=1))))
-                score = edge_e * float(np.std(arr))
-                if score > best_score:
-                    best_score = score
-                    best_idx = idx
-                    src_arr = arr
-                    chosen_num = d_num or num
-
-        if src_arr is None:
-            src_arr, chosen_num = _read_inst(api, src_items[best_idx][1])
-        dst_iid = dst_by_num.get(chosen_num) or dst_items[min(best_idx, len(dst_items) - 1)][1]
-        dst_arr, _ = _read_inst(api, dst_iid)
+            n = 1
+            best_idx = 0
+            src_arr, chosen_num = _read_inst(api, src_items[0][1])
+            dst_arr, _ = _read_inst(api, dst_items[0][1])
     if dst_arr.shape != src_arr.shape:
         src_arr = zoom(src_arr, (dst_arr.shape[0] / src_arr.shape[0], dst_arr.shape[1] / src_arr.shape[1]), order=1)
 

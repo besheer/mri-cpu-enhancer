@@ -271,6 +271,16 @@ class MRIAIEngine:
                 vessel_mask = np.clip((enhanced - 0.18) / 0.25, 0.0, 1.0)
                 enhanced = np.clip(enhanced * (1.0 - 0.12 * (1.0 - vessel_mask)) + 0.06 * vessel_mask * (enhanced ** 0.85), 0.0, 1.0)
 
+            # Technician-calibrated Brightness & Contrast adjustment (default 1.0 / 1.0 = no-op)
+            try:
+                from app.store import setting as _get_setting
+                _br = float(np.clip(float(_get_setting("clinic_brightness", "1.0") or 1.0), 0.75, 1.25))
+                _ct = float(np.clip(float(_get_setting("clinic_contrast", "1.0") or 1.0), 0.75, 1.35))
+            except Exception:
+                _br, _ct = 1.0, 1.0
+            if abs(_br - 1.0) > 1e-3 or abs(_ct - 1.0) > 1e-3:
+                enhanced = np.clip((enhanced - 0.5) * _ct + 0.5 + (_br - 1.0) * 0.5, 0.0, 1.0)
+
             # Rician Background Air Gate
             bg_threshold = 0.14 if seq_type == "ANGIO_MRV" else 0.09 if mode == "print_master" else 0.075
             bg_mask = np.clip((bg_threshold - norm_work) / bg_threshold, 0.0, 1.0)

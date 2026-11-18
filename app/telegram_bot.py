@@ -67,7 +67,7 @@ def send_telegram_notification(text: str) -> int:
 
 
 
-def render_before_after_png(source_series_id: str, output_series_id: str) -> bytes:
+def render_before_after_png(source_series_id: str, output_series_id: str) -> tuple[bytes, int]:
     import tempfile
     import pydicom
     import SimpleITK as sitk
@@ -76,28 +76,35 @@ def render_before_after_png(source_series_id: str, output_series_id: str) -> byt
     orthanc_url = os.getenv("ORTHANC_URL", "http://orthanc:8042").rstrip("/")
     auth = (os.getenv("ORTHANC_USERNAME", "admin"), os.getenv("ORTHANC_PASSWORD", ""))
 
-    def _ordered_instances(api: httpx.Client, sid: str) -> list[str]:
-        r_ord = api.get(f"{orthanc_url}/series/{sid}/ordered-slices")
-        if r_ord.status_code == 200:
-            slices = r_ord.json().get("SlicesShort", [])
-            if slices:
-                return [s[0] for s in slices]
-        s_info = api.get(f"{orthanc_url}/series/{sid}")
-        s_info.raise_for_status()
-        return s_info.json().get("Instances", [])
+    def _instances_by_num(api: httpx.Client, sid: str) -> list[tuple[int, str]]:
+        r = api.get(f"{orthanc_url}/series/{sid}/instances")
+        r.raise_for_status()
+        items = []
+        for inst in r.json():
+            num_raw = inst.get("MainDicomTags", {}).get("InstanceNumber", "0")
+            try:
+                num = int(str(num_raw).strip() or 0)
+            except ValueError:
+                num = 0
+            items.append((num, inst["ID"]))
+        items.sort(key=lambda x: x[0])
+        return items
 
-    def _read_inst(api: httpx.Client, iid: str) -> np.ndarray:
+    def _read_inst(api: httpx.Client, iid: str) -> tuple[np.ndarray, int]:
         raw = api.get(f"{orthanc_url}/instances/{iid}/file")
         raw.raise_for_status()
-        return pydicom.dcmread(io.BytesIO(raw.content)).pixel_array.astype(np.float32)
+        ds = pydicom.dcmread(io.BytesIO(raw.content))
+        inum = int(getattr(ds, "InstanceNumber", 0) or 0)
+        return ds.pixel_array.astype(np.float32), inum
 
     with httpx.Client(auth=auth, timeout=30) as api:
-        src_insts = _ordered_instances(api, source_series_id)
-        dst_insts = _ordered_instances(api, output_series_id)
-        if not src_insts or not dst_insts:
+        src_items = _instances_by_num(api, source_series_id)
+        dst_items = _instances_by_num(api, output_series_id)
+        if not src_items or not dst_items:
             raise ValueError("Empty series")
+        dst_by_num = {num: iid for num, iid in dst_items}
 
-        n = len(src_insts)
+        n = len(src_items)
         lo_idx = n // 4 if n >= 4 else 0
         hi_idx = max(lo_idx + 1, (3 * n) // 4) if n >= 4 else n
         candidates = list(range(lo_idx, hi_idx))
@@ -108,8 +115,10 @@ def render_before_after_png(source_series_id: str, output_series_id: str) -> byt
         best_idx = n // 2
         best_score = -1.0
         src_arr = None
+        chosen_num = src_items[best_idx][0]
         for idx in candidates:
-            arr = _read_inst(api, src_insts[idx])
+            num, iid = src_items[idx]
+            arr, d_num = _read_inst(api, iid)
             sm = gaussian_filter(arr, sigma=1.0)
             edge_e = float(np.mean(np.hypot(sobel(sm, axis=0), sobel(sm, axis=1))))
             score = edge_e * float(np.std(arr))
@@ -117,11 +126,12 @@ def render_before_after_png(source_series_id: str, output_series_id: str) -> byt
                 best_score = score
                 best_idx = idx
                 src_arr = arr
+                chosen_num = d_num or num
 
         if src_arr is None:
-            src_arr = _read_inst(api, src_insts[best_idx])
-        dst_idx = min(best_idx, len(dst_insts) - 1)
-        dst_arr = _read_inst(api, dst_insts[dst_idx])
+            src_arr, chosen_num = _read_inst(api, src_items[best_idx][1])
+        dst_iid = dst_by_num.get(chosen_num) or dst_items[min(best_idx, len(dst_items) - 1)][1]
+        dst_arr, _ = _read_inst(api, dst_iid)
     if dst_arr.shape != src_arr.shape:
         src_arr = zoom(src_arr, (dst_arr.shape[0] / src_arr.shape[0], dst_arr.shape[1] / src_arr.shape[1]), order=1)
 
@@ -136,7 +146,7 @@ def render_before_after_png(source_series_id: str, output_series_id: str) -> byt
         tmp_path = tmp.name
     try:
         sitk.WriteImage(sitk.GetImageFromArray(combined), tmp_path)
-        return Path(tmp_path).read_bytes()
+        return Path(tmp_path).read_bytes(), chosen_num
     finally:
         try:
             Path(tmp_path).unlink(missing_ok=True)
@@ -175,7 +185,8 @@ def send_before_after_to_telegram(
         ids = []
     if not ids:
         return 0
-    png_bytes = render_before_after_png(source_series_id, output_series_id)
+    png_bytes, slice_num = render_before_after_png(source_series_id, output_series_id)
+    caption = f"{caption}\n• رقم الشريحة المتطابقة: `#{slice_num}`"
     sent = 0
     markup = json.dumps(_feedback_keyboard_for_job(job_id)) if job_id else None
     with httpx.Client(timeout=30) as client:
@@ -289,6 +300,15 @@ class TelegramBotWorker:
                     {"text": "🟢 قوة MILD (L1)", "callback_data": "str_MILD"},
                     {"text": "🟡 قوة MEDIUM (L2)", "callback_data": "str_MEDIUM"},
                     {"text": "🔴 قوة STRONG (L3)", "callback_data": "str_STRONG"},
+                ],
+                [
+                    {"text": "☀️ إضاءة +10%", "callback_data": "bc_bright_up"},
+                    {"text": "🌙 إضاءة -10%", "callback_data": "bc_bright_down"},
+                    {"text": "↩️ افتراضي", "callback_data": "bc_reset"},
+                ],
+                [
+                    {"text": "🌓 كونتراست +10%", "callback_data": "bc_cont_up"},
+                    {"text": "🌫️ كونتراست -10%", "callback_data": "bc_cont_down"},
                 ],
                 [
                     {"text": "🦴 SPINE/ORTHO", "callback_data": "prof_RAD4AI_SPINE_PRO"},
@@ -442,6 +462,28 @@ class TelegramBotWorker:
             )
             audit("TELEGRAM_PHOTO_FEEDBACK", "feedback", str(fid), f"job={jid};verdict={verdict}")
             reply = f"{label} — تم تسجيل تقييمك بنجاح برقم `#{fid}`."
+        elif data.startswith("bc_"):
+            br = float(setting("clinic_brightness", "1.0") or 1.0)
+            ct = float(setting("clinic_contrast", "1.0") or 1.0)
+            if data == "bc_bright_up":
+                br = round(min(1.25, br + 0.10), 2)
+            elif data == "bc_bright_down":
+                br = round(max(0.75, br - 0.10), 2)
+            elif data == "bc_cont_up":
+                ct = round(min(1.35, ct + 0.10), 2)
+            elif data == "bc_cont_down":
+                ct = round(max(0.75, ct - 0.10), 2)
+            elif data == "bc_reset":
+                br, ct = 1.0, 1.0
+            set_setting("clinic_brightness", str(br))
+            set_setting("clinic_contrast", str(ct))
+            audit("TELEGRAM_BC_CHANGED", "settings", "8", f"brightness={br};contrast={ct};chat={chat_id}")
+            reply = (
+                f"🎛️ تم تحديث الإضاءة والكونتراست:\n"
+                f"• الإضاءة (`Brightness`): *{int(round(br * 100))}%*\n"
+                f"• التباين (`Contrast`): *{int(round(ct * 100))}%*\n"
+                "اضغط `🔄 إعادة إرسال آخر فحص لـ GE` لتطبيقها ومشاهدتها فوراً."
+            )
         elif data == "reprocess_last":
             c = get_center(8)
             prof = c["auto_profile"] if c else "RAD4AI_SPINE_PRO"

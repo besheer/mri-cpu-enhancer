@@ -94,12 +94,15 @@ class MRIAIEngine:
 
         edge_protect_factor = 0.94
         bg_suppress_factor = 0.96 if mode == "print_master" else 0.45 if mode in ("ge_aw", "3t_hd") else 0.18 if mode == "rician_nlm" else 0.35
-        crisp_boost = 0.020 if mode == "rician_nlm" else 0.04 if mode in ("print_master", "3t_hd", "sr_15t") else 0.025 if mode in ("spine_pro", "ge_aw") else 0.015
+        crisp_boost = 0.036 if mode == "rician_nlm" else 0.04 if mode in ("print_master", "3t_hd", "sr_15t") else 0.025 if mode in ("spine_pro", "ge_aw") else 0.015
 
-        if seq_type == "ANGIO_MRV":
+        if mode == "rician_nlm":
             edge_protect_factor = 0.98
+            flat_denoise = min(flat_denoise, 0.60)
+        if seq_type == "ANGIO_MRV":
+            edge_protect_factor = 0.99
             bg_suppress_factor = 0.45
-            crisp_boost = 0.04
+            crisp_boost = 0.045
         elif seq_type == "STIR_FLAIR":
             edge_protect_factor = 0.98
             bg_suppress_factor = 0.18 if mode == "rician_nlm" else 0.35
@@ -241,11 +244,11 @@ class MRIAIEngine:
                 else:
                     grain_ratio = 0.22
             elif strength <= 0.85:  # MEDIUM / L2
-                base_g = 0.16 if seq_type in ("T2_FSE", "T2_STAR_GRE", "STIR_FLAIR", "T1_SE") else 0.13
+                base_g = 0.22 if mode == "rician_nlm" else 0.16 if seq_type in ("T2_FSE", "T2_STAR_GRE", "STIR_FLAIR", "T1_SE") else 0.13
                 grain_ratio = base_g * fast_scan_scale
-            else:  # STRONG / L3 (PD/STIR extra organic texture: 26% normal / ~21% fast; T2/T1: 24% / ~19%)
+            else:  # STRONG / L3 (Brain rician_nlm/PD/STIR: 26%; T2/T1: 24%)
                 fast_l3_scale = 0.80 if global_sigma >= 0.032 else 1.0
-                base_g = 0.26 if seq_type in ("PD_ORTHO", "STIR_FLAIR") else 0.24 if seq_type in ("T2_FSE", "T2_STAR_GRE", "T1_SE") else 0.20
+                base_g = 0.26 if (mode == "rician_nlm" or seq_type in ("PD_ORTHO", "STIR_FLAIR")) else 0.24 if seq_type in ("T2_FSE", "T2_STAR_GRE", "T1_SE") else 0.20
                 grain_ratio = base_g * fast_l3_scale
             texture_residual = norm_work - enhanced
             tissue_mask = np.clip(norm_work / 0.08, 0.0, 1.0)

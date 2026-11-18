@@ -65,6 +65,106 @@ def send_telegram_notification(text: str) -> int:
     return sent
 
 
+
+
+def render_before_after_png(source_series_id: str, output_series_id: str) -> bytes:
+    import tempfile
+    import pydicom
+    import SimpleITK as sitk
+    from scipy.ndimage import zoom
+
+    orthanc_url = os.getenv("ORTHANC_URL", "http://orthanc:8042").rstrip("/")
+    auth = (os.getenv("ORTHANC_USERNAME", "admin"), os.getenv("ORTHANC_PASSWORD", ""))
+
+    def _mid_slice(sid: str) -> np.ndarray:
+        with httpx.Client(auth=auth, timeout=20) as api:
+            s_info = api.get(f"{orthanc_url}/series/{sid}")
+            s_info.raise_for_status()
+            insts = s_info.json().get("Instances", [])
+            if not insts:
+                raise ValueError("Empty series")
+            mid = insts[len(insts) // 2]
+            raw = api.get(f"{orthanc_url}/instances/{mid}/file")
+            raw.raise_for_status()
+            ds = pydicom.dcmread(io.BytesIO(raw.content))
+            return ds.pixel_array.astype(np.float32)
+
+    src_arr = _mid_slice(source_series_id)
+    dst_arr = _mid_slice(output_series_id)
+    if dst_arr.shape != src_arr.shape:
+        src_arr = zoom(src_arr, (dst_arr.shape[0] / src_arr.shape[0], dst_arr.shape[1] / src_arr.shape[1]), order=1)
+
+    lo = float(np.percentile(src_arr, 1.0))
+    hi = max(float(np.percentile(src_arr, 99.5)), lo + 1.0)
+    src_u8 = np.clip((src_arr - lo) / (hi - lo) * 255.0, 0, 255).astype(np.uint8)
+    dst_u8 = np.clip((dst_arr - lo) / (hi - lo) * 255.0, 0, 255).astype(np.uint8)
+    divider = np.full((src_u8.shape[0], 4), 220, dtype=np.uint8)
+    combined = np.concatenate([src_u8, divider, dst_u8], axis=1)
+
+    with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
+        tmp_path = tmp.name
+    try:
+        sitk.WriteImage(sitk.GetImageFromArray(combined), tmp_path)
+        return Path(tmp_path).read_bytes()
+    finally:
+        try:
+            Path(tmp_path).unlink(missing_ok=True)
+        except Exception:
+            pass
+
+
+def _feedback_keyboard_for_job(job_id: int) -> dict[str, Any]:
+    return {
+        "inline_keyboard": [
+            [
+                {"text": "✅ ممتاز وموافق", "callback_data": f"fb_ok_{job_id}"},
+                {"text": "🌾 يحتاج خشونة", "callback_data": f"fb_grain_{job_id}"},
+            ],
+            [
+                {"text": "🧈 يحتاج تنعيم", "callback_data": f"fb_smooth_{job_id}"},
+                {"text": "❌ مرفوض", "callback_data": f"fb_reject_{job_id}"},
+            ],
+        ]
+    }
+
+
+def send_before_after_to_telegram(
+    source_series_id: str,
+    output_series_id: str,
+    caption: str,
+    job_id: int = 0,
+) -> int:
+    token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
+    if not token:
+        return 0
+    try:
+        raw_ids = setting("telegram_chat_ids", "[]")
+        ids = json.loads(raw_ids) if raw_ids else []
+    except Exception:
+        ids = []
+    if not ids:
+        return 0
+    png_bytes = render_before_after_png(source_series_id, output_series_id)
+    sent = 0
+    markup = json.dumps(_feedback_keyboard_for_job(job_id)) if job_id else None
+    with httpx.Client(timeout=30) as client:
+        for cid in ids:
+            try:
+                data = {"chat_id": str(cid), "caption": caption, "parse_mode": "Markdown"}
+                if markup:
+                    data["reply_markup"] = markup
+                r = client.post(
+                    f"https://api.telegram.org/bot{token}/sendPhoto",
+                    data=data,
+                    files={"photo": ("before_after.png", png_bytes, "image/png")},
+                )
+                if r.status_code == 200:
+                    sent += 1
+            except Exception:
+                pass
+    return sent
+
+
 def _detect_verdict_and_level(text: str) -> tuple[str, str]:
     u = text.upper()
     level = (
@@ -168,7 +268,10 @@ class TelegramBotWorker:
                     {"text": "🔒 نسخة واحدة فقط", "callback_data": "cal_off"},
                 ],
                 [
+                    {"text": "🖼️ قبل وبعد لآخر فحص", "callback_data": "before_after"},
                     {"text": "📤 بطاقات GE", "callback_data": "send_cards"},
+                ],
+                [
                     {"text": "📸 مقارنة صورة مرجعية", "callback_data": "ref_guide"},
                 ],
             ]
@@ -252,6 +355,60 @@ class TelegramBotWorker:
                 reply = f"📤 تم إرسال {res['sent_cards']} بطاقات تقييم إلى `{res['destination']}` بنجاح."
             except Exception as exc:
                 reply = f"❌ تعذر إرسال البطاقات: {exc}"
+        elif data == "before_after":
+            with connect() as db:
+                j = db.execute(
+                    "SELECT cj.id, cj.source_series_id, cj.output_series_id, cj.profile, cj.strength, cj.qc_status, "
+                    "COALESCE(ib.description,'') AS desc "
+                    "FROM comparison_jobs cj LEFT JOIN inbound_series ib ON ib.series_id=cj.source_series_id "
+                    "WHERE cj.status='ready' AND cj.output_series_id IS NOT NULL ORDER BY cj.id DESC LIMIT 1"
+                ).fetchone()
+            if j:
+                try:
+                    cap = (
+                        f"🖼️ *قبل (يسار) | بعد (يمين)*\n"
+                        f"• السلسلة: `{j['desc'] or '-'}` (`#{j['id']}`)\n"
+                        f"• البروفايل: `{j['profile']}` ({j['strength']}) | QC: *{j['qc_status']}*"
+                    )
+                    send_before_after_to_telegram(j["source_series_id"], j["output_series_id"], cap, job_id=int(j["id"]))
+                    return
+                except Exception as exc:
+                    reply = f"❌ تعذر تجهيز صورة المقارنة: {exc}"
+            else:
+                reply = "لا توجد حالة مكتملة بعد."
+        elif data.startswith("fb_"):
+            parts = data.split("_", 2)
+            action = parts[1] if len(parts) > 1 else "ok"
+            jid = parts[2] if len(parts) > 2 else ""
+            verdict_map = {
+                "ok": ("APPROVED", "✅ ممتاز وموافق"),
+                "grain": ("MORE_GRAIN", "🌾 يحتاج خشونة"),
+                "smooth": ("SMOOTHER", "🧈 يحتاج تنعيم"),
+                "reject": ("REJECT", "❌ مرفوض"),
+            }
+            verdict, label = verdict_map.get(action, ("NOTE", action))
+            sdesc = ""
+            if jid.isdigit():
+                with connect() as db:
+                    r = db.execute(
+                        "SELECT COALESCE(ib.description,'') AS desc FROM comparison_jobs cj "
+                        "LEFT JOIN inbound_series ib ON ib.series_id=cj.source_series_id WHERE cj.id=?",
+                        (int(jid),),
+                    ).fetchone()
+                    if r:
+                        sdesc = str(r["desc"] or "")
+            fid = record_feedback(
+                source="telegram",
+                series_id=jid,
+                patient_name=cb.get("from", {}).get("first_name", "tech"),
+                study_description=f"Job #{jid}",
+                series_description=sdesc,
+                verdict=verdict,
+                note=f"تقييم على صورة قبل/بعد (#{jid}): {label}",
+                source_aet=f"tg:{chat_id}",
+            )
+            audit("TELEGRAM_PHOTO_FEEDBACK", "feedback", str(fid), f"job={jid};verdict={verdict}")
+            reply = f"{label} — تم تسجيل تقييمك بنجاح برقم `#{fid}`."
         elif data == "ref_guide":
             reply = (
                 "📸 *إرسال نموذج/صورة مرجعية للمقارنة:*\n"

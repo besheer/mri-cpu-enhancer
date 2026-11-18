@@ -69,21 +69,28 @@ class ReturnWorker:
                 audit("RETURN_SENT", "return_job", job["id"], f"destination={job['return_aet']}@{job['return_ip']}:{job['return_port']}")
                 try:
                     import json as _json
-                    from app.telegram_bot import send_telegram_notification
+                    from app.telegram_bot import send_before_after_to_telegram, send_telegram_notification
                     with connect() as _db:
                         _cj = _db.execute(
-                            "SELECT cj.profile, cj.strength, cj.qc_status, cj.metrics_json, COALESCE(ib.description,'') AS desc "
+                            "SELECT cj.id, cj.source_series_id, cj.output_series_id, cj.profile, cj.strength, cj.qc_status, cj.metrics_json, COALESCE(ib.description,'') AS desc "
                             "FROM comparison_jobs cj LEFT JOIN inbound_series ib ON ib.series_id=cj.source_series_id WHERE cj.id=?",
                             (job["comparison_job_id"],),
                         ).fetchone()
                     if _cj:
                         _m = _json.loads(_cj["metrics_json"] or "{}")
-                        send_telegram_notification(
-                            f"✅ *تم الإرسال إلى GE (`{job['return_aet']}`)*\n"
-                            f"• السلسلة: `{_cj['desc'] or '-'}`\n"
+                        _cap = (
+                            f"✅ *تم الإرسال إلى GE (`{job['return_aet']}`) — قبل (يسار) | بعد (يمين)*\n"
+                            f"• السلسلة: `{_cj['desc'] or '-'}` (`#{_cj['id']}`)\n"
                             f"• البروفايل: `{_cj['profile']}` ({_cj['strength']}) | QC: *{_cj['qc_status']}*\n"
                             f"• الحواف: `{_m.get('edge_preservation_percent', '-')}%` | الضوضاء: `{_m.get('noise_change_percent', '-')}%`"
                         )
+                        _sent_cnt = 0
+                        if _cj["source_series_id"] and _cj["output_series_id"]:
+                            _sent_cnt = send_before_after_to_telegram(
+                                _cj["source_series_id"], _cj["output_series_id"], _cap, job_id=int(_cj["id"])
+                            )
+                        if _sent_cnt == 0:
+                            send_telegram_notification(_cap)
                 except Exception:
                     pass
             except Exception as exc:

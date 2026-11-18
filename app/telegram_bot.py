@@ -512,6 +512,26 @@ class TelegramBotWorker:
             )
             return
 
+        if any(k in text for k in ("اخر صور", "قبل وبعد", "اخر حاله", "اخر فحص", "ابعتلي صور")):
+            with connect() as db:
+                j = db.execute(
+                    "SELECT cj.id, cj.source_series_id, cj.output_series_id, cj.profile, cj.strength, cj.qc_status, "
+                    "COALESCE(ib.description,'') AS desc "
+                    "FROM comparison_jobs cj LEFT JOIN inbound_series ib ON ib.series_id=cj.source_series_id "
+                    "WHERE cj.status='ready' AND cj.output_series_id IS NOT NULL ORDER BY cj.id DESC LIMIT 1"
+                ).fetchone()
+            if j:
+                try:
+                    cap = (
+                        f"🖼️ *قبل (يسار) | بعد (يمين)*\n"
+                        f"• السلسلة: `{j['desc'] or '-'}` (`#{j['id']}`)\n"
+                        f"• البروفايل: `{j['profile']}` ({j['strength']}) | QC: *{j['qc_status']}*"
+                    )
+                    send_before_after_to_telegram(j["source_series_id"], j["output_series_id"], cap, job_id=int(j["id"]))
+                    return
+                except Exception:
+                    pass
+
         verdict, level = _detect_verdict_and_level(text)
         last_sdesc = ""
         with connect() as db:

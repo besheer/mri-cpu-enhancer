@@ -269,11 +269,13 @@ class TelegramBotWorker:
                 ],
                 [
                     {"text": "🖼️ قبل وبعد لآخر فحص", "callback_data": "before_after"},
-                    {"text": "📤 بطاقات GE", "callback_data": "send_cards"},
+                    {"text": "🔄 إعادة إرسال آخر فحص لـ GE", "callback_data": "reprocess_last"},
                 ],
                 [
+                    {"text": "📤 بطاقات GE", "callback_data": "send_cards"},
                     {"text": "📸 مقارنة صورة مرجعية", "callback_data": "ref_guide"},
                 ],
+
             ]
         }
 
@@ -409,6 +411,30 @@ class TelegramBotWorker:
             )
             audit("TELEGRAM_PHOTO_FEEDBACK", "feedback", str(fid), f"job={jid};verdict={verdict}")
             reply = f"{label} — تم تسجيل تقييمك بنجاح برقم `#{fid}`."
+        elif data == "reprocess_last":
+            c = get_center(8)
+            prof = c["auto_profile"] if c else "RAD4AI_SPINE_PRO"
+            strength = c["auto_strength"] if c else "STRONG"
+            with connect() as db:
+                last_j = db.execute(
+                    "SELECT cj.source_series_id, COALESCE(ib.description,'') AS desc "
+                    "FROM comparison_jobs cj LEFT JOIN inbound_series ib ON ib.series_id=cj.source_series_id "
+                    "ORDER BY cj.id DESC LIMIT 1"
+                ).fetchone()
+                if last_j:
+                    cur = db.execute(
+                        "INSERT INTO comparison_jobs(source_series_id, profile, strength, acknowledged) VALUES(?,?,?,1)",
+                        (last_j["source_series_id"], prof, strength),
+                    )
+                    new_jid = int(cur.lastrowid)
+                    audit("TELEGRAM_REPROCESS_LAST", "comparison_job", str(new_jid), f"chat={chat_id}")
+                    reply = (
+                        f"🔄 تمت جدولة إعادة معالجة وإرسال آخر سلسلة (`{last_j['desc'] or '-'}`) "
+                        f"برقم `#{new_jid}` (`{prof}` / `{strength}`).\n"
+                        "ستصلك النتيجة وصورة قبل/بعد تلقائياً فور الانتهاء والإرسال لـ GE."
+                    )
+                else:
+                    reply = "لا توجد سلسلة سابقة لإعادة معالجتها."
         elif data == "ref_guide":
             reply = (
                 "📸 *إرسال نموذج/صورة مرجعية للمقارنة:*\n"

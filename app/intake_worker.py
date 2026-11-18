@@ -13,6 +13,40 @@ from app.store import audit, auto_eligible_profile_names, connect, enabled_profi
 log = logging.getLogger("intake-worker")
 
 
+
+
+def resolve_scan_profile_and_strength(
+    study_desc: str,
+    series_desc: str,
+    default_profile: str,
+    default_strength: str,
+    auto_allowed: set[str],
+    enabled_set: set[str],
+) -> tuple[str, str]:
+    """Dedicated per-scan Smart Routing based on clinic-validated preferences."""
+    import re
+    u = f"{study_desc} {series_desc}".upper()
+    profile, strength = default_profile, default_strength
+
+    is_mrv = any(k in u for k in ("MRV", "MRA", "TOF", "ANGIO", "VENO", "PROJECTION", "MIP", "INFLOW", "PCA"))
+    is_brain = any(w in u for w in ("BRAIN", "HEAD", "NEURO", "SKULL", "FLAIR"))
+    is_pd = ("PD" in u or "PROTON" in u)
+    is_stir = any(k in u for k in ("STIR", "FAT", "SPAIR", "FATSAT")) or bool(re.search(r"(?:^|[\s_\-/])FS(?:$|[\s_\-/])", u))
+
+    if is_mrv and "RICIAN_NLM_VST" in (auto_allowed & enabled_set):
+        return "RICIAN_NLM_VST", "STRONG"
+    if is_brain and "RICIAN_NLM_VST" in (auto_allowed & enabled_set):
+        return "RICIAN_NLM_VST", "STRONG"
+    if "RAD4AI_SPINE_PRO" in (auto_allowed & enabled_set):
+        if is_pd:
+            return "RAD4AI_SPINE_PRO", "STRONG"
+        if is_stir and "FLAIR" not in u:
+            return "RAD4AI_SPINE_PRO", "MILD"  # Clinic-approved L1 for STIR
+        if "T2" in u or "T1" in u:
+            return "RAD4AI_SPINE_PRO", "STRONG"
+    return profile, strength
+
+
 class IntakeWorker:
     def __init__(self) -> None:
         self.stop_event = threading.Event()
@@ -193,12 +227,16 @@ class IntakeWorker:
                             study_desc = str(st_resp.json().get("MainDicomTags", {}).get("StudyDescription", "")).upper()
                     except Exception:
                         study_desc = ""
-                combined_desc = f"{study_desc} {u_desc}"
-                profile, strength = center["auto_profile"], center["auto_strength"]
                 auto_allowed = auto_eligible_profile_names()
                 enabled_set = enabled_profile_names()
-                if any(w in combined_desc for w in ("BRAIN", "HEAD", "NEURO", "SKULL", "FLAIR")) and "RICIAN_NLM_VST" in (auto_allowed & enabled_set):
-                    profile = "RICIAN_NLM_VST"
+                profile, strength = resolve_scan_profile_and_strength(
+                    study_desc,
+                    u_desc,
+                    center["auto_profile"],
+                    center["auto_strength"],
+                    auto_allowed,
+                    enabled_set,
+                )
                 if profile not in PROFILES or (profile not in auto_allowed and profile not in enabled_set):
                     with connect() as db:
                         db.execute("UPDATE inbound_series SET status='FAILED',error='Profile is not eligible for automatic processing',updated_at=CURRENT_TIMESTAMP WHERE series_id=?", (sid,))

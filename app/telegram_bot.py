@@ -338,6 +338,37 @@ def enhance_slice_with_gemini(source_series_id: str) -> tuple[bytes, int]:
             Path(fp).unlink(missing_ok=True)
 
 
+
+
+def _transcribe_voice_gemini(audio_bytes: bytes, mime_type: str = "audio/ogg") -> str:
+    import base64
+    api_key = os.getenv("GEMINI_API_KEY", "").strip()
+    if not api_key:
+        return ""
+    b64 = base64.b64encode(audio_bytes).decode("ascii")
+    payload = {
+        "contents": [{
+            "parts": [
+                {"text": "Transcribe this MRI clinic technician/radiologist voice note accurately in its spoken language (Arabic/English). Output ONLY the transcription text, nothing else."},
+                {"inlineData": {"mimeType": mime_type, "data": b64}},
+            ]
+        }]
+    }
+    try:
+        r = httpx.post(
+            "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent",
+            headers={"x-goog-api-key": api_key},
+            json=payload,
+            timeout=45,
+        )
+        if r.status_code == 200:
+            parts = r.json().get("candidates", [{}])[0].get("content", {}).get("parts", [])
+            return " ".join(str(pt.get("text", "")).strip() for pt in parts if pt.get("text")).strip()
+    except Exception:
+        pass
+    return ""
+
+
 def _detect_verdict_and_level(text: str) -> tuple[str, str]:
     u = text.upper()
     level = (
@@ -459,6 +490,7 @@ class TelegramBotWorker:
                 ],
                 [
                     {"text": "📤 بطاقات GE", "callback_data": "send_cards"},
+                    {"text": "🎙️ تسجيل/كتابة ملاحظة", "callback_data": "note_guide"},
                 ],
 
             ]
@@ -509,7 +541,10 @@ class TelegramBotWorker:
         chat_id = cb["message"]["chat"]["id"]
         _register_chat(int(chat_id))
         data = cb.get("data", "")
-        self._api(client, "answerCallbackQuery", {"callback_query_id": cb_id})
+        try:
+            self._api(client, "answerCallbackQuery", {"callback_query_id": cb_id})
+        except Exception:
+            pass
 
         if data == "status":
             reply = self._format_status()
@@ -711,6 +746,12 @@ class TelegramBotWorker:
                     reply = f"❌ تعذر التحسين الخارجي عبر Gemini: {exc}"
             else:
                 reply = "لا توجد سلسلة متاحة للتحسين الخارجي."
+        elif data == "note_guide":
+            reply = (
+                "🎙️ *تسجيل ملاحظة صوتية أو كتابية:*\n"
+                "أرسل الآن **رسالة صوتية (Voice)** أو **رسالة نصية** بملاحظتك (مثلاً: _T2 محتاج خشونة بسيطة_ أو _L3 ممتاز_) — "
+                "سيقوم البوت بتفريغ الصوت تلقائياً وحفظ الملاحظة وإبلاغ الفريق للتنفيذ فوراً."
+            )
         elif data == "ref_guide":
             reply = (
                 "📸 *إرسال نموذج/صورة مرجعية للمقارنة:*\n"
@@ -784,6 +825,51 @@ class TelegramBotWorker:
         _register_chat(int(chat_id))
         sender = msg.get("from", {}).get("first_name", "") or msg.get("from", {}).get("username", "tech")
         text = (msg.get("text") or msg.get("caption") or "").strip()
+
+        voice_obj = msg.get("voice") or msg.get("audio")
+        if voice_obj:
+            try:
+                finfo = self._api(client, "getFile", {"file_id": voice_obj["file_id"]})
+                fpath = finfo["result"]["file_path"]
+                dl = client.get(f"https://api.telegram.org/file/bot{self.token}/{fpath}", timeout=30)
+                dl.raise_for_status()
+                vdir = Path("/var/lib/enhancer/telegram_voices")
+                vdir.mkdir(parents=True, exist_ok=True)
+                vpath = vdir / f"voice_{chat_id}_{Path(fpath).name}"
+                vpath.write_bytes(dl.content)
+                mime = str(voice_obj.get("mime_type") or "audio/ogg")
+                transcript = _transcribe_voice_gemini(dl.content, mime_type=mime)
+                note_txt = transcript or f"[رسالة صوتية محفوظة: {vpath.name}]"
+                verdict, level = _detect_verdict_and_level(note_txt)
+                last_sdesc = ""
+                with connect() as db:
+                    row = db.execute("SELECT description FROM inbound_series ORDER BY received_at DESC LIMIT 1").fetchone()
+                    if row:
+                        last_sdesc = str(row["description"] or "")
+                fid = record_feedback(
+                    source="telegram_voice",
+                    patient_name=sender,
+                    study_description="Telegram Voice Note",
+                    series_description=last_sdesc,
+                    level=level,
+                    verdict=verdict,
+                    note=f"{note_txt} ({vpath.name})",
+                    source_aet=f"tg:{chat_id}",
+                )
+                audit("TELEGRAM_VOICE_NOTE", "feedback", str(fid), f"chat={chat_id};file={vpath.name}")
+                reply = (
+                    f"🎙️ *تم استلام وحفظ الملاحظة الصوتية برقم `#{fid}`*\n"
+                    f"• التفريغ النصي: _{note_txt}_\n"
+                    f"• التصنيف: `{verdict}` {f'| {level}' if level else ''}"
+                )
+            except Exception as exc:
+                reply = f"❌ تعذر معالجة الرسالة الصوتية: {exc}"
+            self._api(
+                client,
+                "sendMessage",
+                {"chat_id": chat_id, "text": reply, "parse_mode": "Markdown", "reply_markup": self._menu_keyboard()},
+            )
+            return
 
         if msg.get("photo"):
             largest = msg["photo"][-1]

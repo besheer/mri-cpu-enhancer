@@ -61,7 +61,7 @@ class MRIAIEngine:
     @staticmethod
     def detect_sequence_type(description: str = "") -> str:
         u = (description or "").upper()
-        if any(k in u for k in ("MRV", "MRA", "TOF", "ANGIO", "VENO")):
+        if any(k in u for k in ("MRV", "MRA", "TOF", "ANGIO", "VENO", "FLOW", "PROJECTION", "MIP", "INFLOW", "PCA")):
             return "ANGIO_MRV"
         if "PD" in u or "PROTON" in u:
             return "PD_ORTHO"

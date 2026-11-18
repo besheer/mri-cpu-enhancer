@@ -67,6 +67,25 @@ class ReturnWorker:
                     db.execute("UPDATE return_jobs SET status='sent',error=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=?", (job["id"],))
                     db.execute("UPDATE inbound_series SET status='SENT',error=NULL,updated_at=CURRENT_TIMESTAMP WHERE job_id=?", (job["comparison_job_id"],))
                 audit("RETURN_SENT", "return_job", job["id"], f"destination={job['return_aet']}@{job['return_ip']}:{job['return_port']}")
+                try:
+                    import json as _json
+                    from app.telegram_bot import send_telegram_notification
+                    with connect() as _db:
+                        _cj = _db.execute(
+                            "SELECT cj.profile, cj.strength, cj.qc_status, cj.metrics_json, COALESCE(ib.description,'') AS desc "
+                            "FROM comparison_jobs cj LEFT JOIN inbound_series ib ON ib.series_id=cj.source_series_id WHERE cj.id=?",
+                            (job["comparison_job_id"],),
+                        ).fetchone()
+                    if _cj:
+                        _m = _json.loads(_cj["metrics_json"] or "{}")
+                        send_telegram_notification(
+                            f"✅ *تم الإرسال إلى GE (`{job['return_aet']}`)*\n"
+                            f"• السلسلة: `{_cj['desc'] or '-'}`\n"
+                            f"• البروفايل: `{_cj['profile']}` ({_cj['strength']}) | QC: *{_cj['qc_status']}*\n"
+                            f"• الحواف: `{_m.get('edge_preservation_percent', '-')}%` | الضوضاء: `{_m.get('noise_change_percent', '-')}%`"
+                        )
+                except Exception:
+                    pass
             except Exception as exc:
                 retry = job["attempts"] + 1 < int(job["max_return_attempts"])
                 with connect() as db:

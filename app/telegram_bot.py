@@ -16,6 +16,8 @@ from app.store import (
     list_feedback,
     record_feedback,
     set_center_calibration,
+    set_setting,
+    setting,
 )
 
 log = logging.getLogger("telegram-bot")
@@ -40,6 +42,47 @@ def _detect_verdict_and_level(text: str) -> tuple[str, str]:
         else "NOTE"
     )
     return verdict, level
+
+
+
+
+def _register_chat(chat_id: int) -> None:
+    try:
+        raw = setting("telegram_chat_ids", "[]")
+        ids = json.loads(raw) if raw else []
+        if not isinstance(ids, list):
+            ids = []
+        if chat_id not in ids:
+            ids.append(chat_id)
+            set_setting("telegram_chat_ids", json.dumps(ids[-20:]))
+    except Exception:
+        pass
+
+
+def send_telegram_notification(text: str) -> int:
+    token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
+    if not token:
+        return 0
+    try:
+        raw = setting("telegram_chat_ids", "[]")
+        ids = json.loads(raw) if raw else []
+    except Exception:
+        ids = []
+    sent = 0
+    if not ids:
+        return 0
+    with httpx.Client(timeout=15) as client:
+        for cid in ids:
+            try:
+                r = client.post(
+                    f"https://api.telegram.org/bot{token}/sendMessage",
+                    json={"chat_id": cid, "text": text, "parse_mode": "Markdown"},
+                )
+                if r.status_code == 200:
+                    sent += 1
+            except Exception:
+                pass
+    return sent
 
 
 class TelegramBotWorker:
@@ -142,6 +185,7 @@ class TelegramBotWorker:
     def _handle_callback(self, client: httpx.Client, cb: dict[str, Any]) -> None:
         cb_id = cb["id"]
         chat_id = cb["message"]["chat"]["id"]
+        _register_chat(int(chat_id))
         data = cb.get("data", "")
         self._api(client, "answerCallbackQuery", {"callback_query_id": cb_id})
 
@@ -175,6 +219,7 @@ class TelegramBotWorker:
 
     def _handle_message(self, client: httpx.Client, msg: dict[str, Any]) -> None:
         chat_id = msg["chat"]["id"]
+        _register_chat(int(chat_id))
         sender = msg.get("from", {}).get("first_name", "") or msg.get("from", {}).get("username", "tech")
         text = (msg.get("text") or msg.get("caption") or "").strip()
         if not text:

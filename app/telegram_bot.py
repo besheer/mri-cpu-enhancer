@@ -67,7 +67,7 @@ def send_telegram_notification(text: str) -> int:
 
 
 
-def render_before_after_png(source_series_id: str, output_series_id: str) -> tuple[bytes, int]:
+def render_before_after_png(source_series_id: str, output_series_id: str, slice_index: int | None = None) -> tuple[bytes, int, int, int]:
     import tempfile
     import pydicom
     import SimpleITK as sitk
@@ -105,28 +105,33 @@ def render_before_after_png(source_series_id: str, output_series_id: str) -> tup
         dst_by_num = {num: iid for num, iid in dst_items}
 
         n = len(src_items)
-        lo_idx = n // 4 if n >= 4 else 0
-        hi_idx = max(lo_idx + 1, (3 * n) // 4) if n >= 4 else n
-        candidates = list(range(lo_idx, hi_idx))
-        if len(candidates) > 7:
-            step = max(1, len(candidates) // 7)
-            candidates = candidates[::step]
+        if slice_index is not None:
+            best_idx = max(0, min(n - 1, int(slice_index)))
+            src_arr, d_num = _read_inst(api, src_items[best_idx][1])
+            chosen_num = d_num or src_items[best_idx][0]
+        else:
+            lo_idx = n // 4 if n >= 4 else 0
+            hi_idx = max(lo_idx + 1, (3 * n) // 4) if n >= 4 else n
+            candidates = list(range(lo_idx, hi_idx))
+            if len(candidates) > 7:
+                step = max(1, len(candidates) // 7)
+                candidates = candidates[::step]
 
-        best_idx = n // 2
-        best_score = -1.0
-        src_arr = None
-        chosen_num = src_items[best_idx][0]
-        for idx in candidates:
-            num, iid = src_items[idx]
-            arr, d_num = _read_inst(api, iid)
-            sm = gaussian_filter(arr, sigma=1.0)
-            edge_e = float(np.mean(np.hypot(sobel(sm, axis=0), sobel(sm, axis=1))))
-            score = edge_e * float(np.std(arr))
-            if score > best_score:
-                best_score = score
-                best_idx = idx
-                src_arr = arr
-                chosen_num = d_num or num
+            best_idx = n // 2
+            best_score = -1.0
+            src_arr = None
+            chosen_num = src_items[best_idx][0]
+            for idx in candidates:
+                num, iid = src_items[idx]
+                arr, d_num = _read_inst(api, iid)
+                sm = gaussian_filter(arr, sigma=1.0)
+                edge_e = float(np.mean(np.hypot(sobel(sm, axis=0), sobel(sm, axis=1))))
+                score = edge_e * float(np.std(arr))
+                if score > best_score:
+                    best_score = score
+                    best_idx = idx
+                    src_arr = arr
+                    chosen_num = d_num or num
 
         if src_arr is None:
             src_arr, chosen_num = _read_inst(api, src_items[best_idx][1])
@@ -146,7 +151,7 @@ def render_before_after_png(source_series_id: str, output_series_id: str) -> tup
         tmp_path = tmp.name
     try:
         sitk.WriteImage(sitk.GetImageFromArray(combined), tmp_path)
-        return Path(tmp_path).read_bytes(), chosen_num
+        return Path(tmp_path).read_bytes(), chosen_num, best_idx, n
     finally:
         try:
             Path(tmp_path).unlink(missing_ok=True)
@@ -154,19 +159,27 @@ def render_before_after_png(source_series_id: str, output_series_id: str) -> tup
             pass
 
 
-def _feedback_keyboard_for_job(job_id: int) -> dict[str, Any]:
-    return {
-        "inline_keyboard": [
-            [
-                {"text": "✅ ممتاز وموافق", "callback_data": f"fb_ok_{job_id}"},
-                {"text": "🌾 يحتاج خشونة", "callback_data": f"fb_grain_{job_id}"},
-            ],
-            [
-                {"text": "🧈 يحتاج تنعيم", "callback_data": f"fb_smooth_{job_id}"},
-                {"text": "❌ مرفوض", "callback_data": f"fb_reject_{job_id}"},
-            ],
-        ]
-    }
+def _feedback_keyboard_for_job(job_id: int, slice_idx: int = 0, total_slices: int = 1) -> dict[str, Any]:
+    prev_idx = max(0, slice_idx - 1)
+    next_idx = min(max(0, total_slices - 1), slice_idx + 1)
+    rows = []
+    if total_slices > 1:
+        rows.append([
+            {"text": "⬅️ الشريحة السابقة", "callback_data": f"sl_{job_id}_{prev_idx}"},
+            {"text": f"📄 {slice_idx + 1}/{total_slices}", "callback_data": "noop"},
+            {"text": "➡️ الشريحة التالية", "callback_data": f"sl_{job_id}_{next_idx}"},
+        ])
+    rows.extend([
+        [
+            {"text": "✅ ممتاز وموافق", "callback_data": f"fb_ok_{job_id}"},
+            {"text": "🌾 يحتاج خشونة", "callback_data": f"fb_grain_{job_id}"},
+        ],
+        [
+            {"text": "🧈 يحتاج تنعيم", "callback_data": f"fb_smooth_{job_id}"},
+            {"text": "❌ مرفوض", "callback_data": f"fb_reject_{job_id}"},
+        ],
+    ])
+    return {"inline_keyboard": rows}
 
 
 def send_before_after_to_telegram(
@@ -185,10 +198,10 @@ def send_before_after_to_telegram(
         ids = []
     if not ids:
         return 0
-    png_bytes, slice_num = render_before_after_png(source_series_id, output_series_id)
-    caption = f"{caption}\n• رقم الشريحة المتطابقة: `#{slice_num}`"
+    png_bytes, slice_num, slice_idx, total_slices = render_before_after_png(source_series_id, output_series_id)
+    caption = f"{caption}\n• شريحة متطابقة: `#{slice_num}` (`{slice_idx + 1}/{total_slices}`)"
     sent = 0
-    markup = json.dumps(_feedback_keyboard_for_job(job_id)) if job_id else None
+    markup = json.dumps(_feedback_keyboard_for_job(job_id, slice_idx, total_slices)) if job_id else None
     with httpx.Client(timeout=30) as client:
         for cid in ids:
             try:
@@ -277,12 +290,25 @@ def enhance_slice_with_gemini(source_series_id: str) -> tuple[bytes, int]:
             "contents": [{"parts": [{"text": prompt}, {"inlineData": {"mimeType": "image/png", "data": b64_in}}]}],
             "generationConfig": {"responseModalities": ["IMAGE", "TEXT"]},
         }
-        resp = httpx.post(
-            f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-image:generateContent?key={api_key}",
-            json=payload,
-            timeout=90,
-        )
-        resp.raise_for_status()
+        resp = None
+        last_status = 0
+        for model_name in ("gemini-2.5-flash-image", "gemini-3.1-flash-image", "gemini-3-pro-image"):
+            r_try = httpx.post(
+                f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent",
+                headers={"x-goog-api-key": api_key},
+                json=payload,
+                timeout=90,
+            )
+            last_status = r_try.status_code
+            if r_try.status_code == 200:
+                resp = r_try
+                break
+            if r_try.status_code not in (429, 404, 503):
+                r_try.raise_for_status()
+        if resp is None:
+            if last_status == 429:
+                raise RuntimeError("حصة Gemini API للصور ممتلئة حالياً (429 Too Many Requests). استخدم التحسين المحلي أو فعّل الفوترة على Google AI Studio.")
+            raise RuntimeError(f"تعذر الاتصال بنموذج Gemini للصور (HTTP {last_status})")
         gem_bytes = None
         for cand in resp.json().get("candidates", []):
             for part in cand.get("content", {}).get("parts", []):
@@ -534,6 +560,47 @@ class TelegramBotWorker:
                     reply = f"❌ تعذر تجهيز صورة المقارنة: {exc}"
             else:
                 reply = "لا توجد حالة مكتملة بعد."
+        elif data == "noop":
+            return
+        elif data.startswith("sl_"):
+            parts = data.split("_", 2)
+            jid = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 0
+            s_idx = int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else 0
+            with connect() as db:
+                j = db.execute(
+                    "SELECT cj.id, cj.source_series_id, cj.output_series_id, cj.profile, cj.strength, cj.qc_status, "
+                    "COALESCE(ib.description,'') AS desc "
+                    "FROM comparison_jobs cj LEFT JOIN inbound_series ib ON ib.series_id=cj.source_series_id "
+                    "WHERE cj.id=?",
+                    (jid,),
+                ).fetchone()
+            if j and j["source_series_id"] and j["output_series_id"]:
+                try:
+                    png_bytes, slice_num, cur_idx, total = render_before_after_png(
+                        j["source_series_id"], j["output_series_id"], slice_index=s_idx
+                    )
+                    cap = (
+                        f"🖼️ *قبل (يسار) | بعد (يمين)*\n"
+                        f"• السلسلة: `{j['desc'] or '-'}` (`#{j['id']}`)\n"
+                        f"• البروفايل: `{j['profile']}` ({j['strength']}) | QC: *{j['qc_status']}*\n"
+                        f"• شريحة متطابقة: `#{slice_num}` (`{cur_idx + 1}/{total}`)"
+                    )
+                    client.post(
+                        f"https://api.telegram.org/bot{self.token}/editMessageMedia",
+                        data={
+                            "chat_id": str(chat_id),
+                            "message_id": str(cb["message"]["message_id"]),
+                            "media": json.dumps({"type": "photo", "media": "attach://photo", "caption": cap, "parse_mode": "Markdown"}),
+                            "reply_markup": json.dumps(_feedback_keyboard_for_job(jid, cur_idx, total)),
+                        },
+                        files={"photo": ("before_after.png", png_bytes, "image/png")},
+                        timeout=30,
+                    )
+                    return
+                except Exception as exc:
+                    reply = f"❌ تعذر تحميل الشريحة: {exc}"
+            else:
+                reply = "السلسلة غير متاحة."
         elif data.startswith("fb_"):
             parts = data.split("_", 2)
             action = parts[1] if len(parts) > 1 else "ok"

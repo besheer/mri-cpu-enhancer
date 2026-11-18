@@ -101,8 +101,8 @@ class MRIAIEngine:
             flat_denoise = min(flat_denoise, 0.60)
         if seq_type == "ANGIO_MRV":
             edge_protect_factor = 0.99
-            bg_suppress_factor = 0.45
-            crisp_boost = 0.045
+            bg_suppress_factor = 0.68
+            crisp_boost = 0.050
         elif seq_type == "STIR_FLAIR":
             edge_protect_factor = 0.98
             bg_suppress_factor = 0.18 if mode == "rician_nlm" else 0.35
@@ -246,9 +246,9 @@ class MRIAIEngine:
             elif strength <= 0.85:  # MEDIUM / L2
                 base_g = 0.22 if mode == "rician_nlm" else 0.16 if seq_type in ("T2_FSE", "T2_STAR_GRE", "STIR_FLAIR", "T1_SE") else 0.13
                 grain_ratio = base_g * fast_scan_scale
-            else:  # STRONG / L3 (Brain rician_nlm/PD/STIR: 26%; T2/T1: 24%)
+            else:  # STRONG / L3 (Brain rician_nlm/PD/STIR: 26%; T2/T1: 24%; ANGIO_MRV MIP: clean 6%)
                 fast_l3_scale = 0.80 if global_sigma >= 0.032 else 1.0
-                base_g = 0.26 if (mode == "rician_nlm" or seq_type in ("PD_ORTHO", "STIR_FLAIR")) else 0.24 if seq_type in ("T2_FSE", "T2_STAR_GRE", "T1_SE") else 0.20
+                base_g = 0.06 if seq_type == "ANGIO_MRV" else 0.26 if (mode == "rician_nlm" or seq_type in ("PD_ORTHO", "STIR_FLAIR")) else 0.24 if seq_type in ("T2_FSE", "T2_STAR_GRE", "T1_SE") else 0.20
                 grain_ratio = base_g * fast_l3_scale
             texture_residual = norm_work - enhanced
             tissue_mask = np.clip(norm_work / 0.08, 0.0, 1.0)
@@ -264,8 +264,13 @@ class MRIAIEngine:
                 scurve = np.clip((scurve - s_min) / (s_max - s_min), 0.0, 1.0)
                 enhanced = 0.55 * scurve + 0.45 * enhanced
 
+            # Clean MIP Vessel Contrast Lift for ANGIO_MRV (keeps thin cortical veins & distal branches crisp)
+            if seq_type == "ANGIO_MRV":
+                vessel_mask = np.clip((enhanced - 0.18) / 0.25, 0.0, 1.0)
+                enhanced = np.clip(enhanced * (1.0 - 0.12 * (1.0 - vessel_mask)) + 0.06 * vessel_mask * (enhanced ** 0.85), 0.0, 1.0)
+
             # Rician Background Air Gate
-            bg_threshold = 0.09 if mode == "print_master" else 0.075
+            bg_threshold = 0.14 if seq_type == "ANGIO_MRV" else 0.09 if mode == "print_master" else 0.075
             bg_mask = np.clip((bg_threshold - norm_work) / bg_threshold, 0.0, 1.0)
             enhanced = enhanced * (1.0 - bg_suppress_factor * bg_mask)
 

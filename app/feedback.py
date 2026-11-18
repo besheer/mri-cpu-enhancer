@@ -128,7 +128,7 @@ def feedback_page(saved: int = 0):
     rows_html = ""
     for item in items:
         v_text = VERDICT_LABELS.get(item["verdict"], item["verdict"])
-        src_badge = "📱 Telegram" if item["source"] == "telegram" else "🖥️ GE DICOM" if item["source"] == "ge_dicom" else "🌐 صفحة التقييم"
+        src_badge = "🎙️ صوت تليجرام" if item["source"] == "telegram_voice" else "📸 مرجع تليجرام" if item["source"] == "telegram_ref" else "📱 Telegram" if item["source"] == "telegram" else "🖥️ GE DICOM" if item["source"] == "ge_dicom" else "🌐 صفحة التقييم"
         rows_html += f"""
         <tr>
           <td>#{item['id']}</td>
@@ -217,8 +217,38 @@ def feedback_page(saved: int = 0):
         <label class="radio-btn"><input type="radio" name="verdict" value="REJECT">❌ مرفوض</label>
       </div>
 
-      <label>4) ملاحظات التعديل (بالعربي أو الإنجليزي):</label>
-      <textarea name="note" rows="3" placeholder="مثال: الـ T2 ممتاز لكن FLAIR يحتاج سنة خشونة، أو L2 هو الأفضل..."></textarea>
+      <label>4) ملاحظات التعديل (كتابة أو تسجيل صوتي 🎙️):</label>
+      <div style="display:flex; gap:8px; margin-bottom:8px; align-items:center;">
+        <button type="button" id="micBtn" class="btn btn-primary" onclick="toggleDictation()">🎙️ تسجيل صوتي (عربي)</button>
+        <span id="micStatus" style="font-size:13px; color:#94a3b8;">اضغط للتحدث وسيُكتب كلامك تلقائياً</span>
+      </div>
+      <textarea id="noteBox" name="note" rows="3" placeholder="مثال: الـ T2 ممتاز لكن FLAIR يحتاج سنة خشونة، أو L2 هو الأفضل..."></textarea>
+      <script>
+        let recog = null, listening = false;
+        function toggleDictation() {{
+          const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+          const st = document.getElementById("micStatus");
+          const btn = document.getElementById("micBtn");
+          const box = document.getElementById("noteBox");
+          if (!SR) {{ st.textContent = "المتصفح لا يدعم الإملاء الصوتي — استخدم الكتابة أو التليجرام 🎙️"; return; }}
+          if (listening && recog) {{ recog.stop(); return; }}
+          recog = new SR();
+          recog.lang = "ar-EG";
+          recog.interimResults = false;
+          recog.continuous = true;
+          recog.onstart = () => {{ listening = true; btn.textContent = "⏹️ إيقاف التسجيل"; st.textContent = "جاري الاستماع..."; }};
+          recog.onresult = (e) => {{
+            let txt = "";
+            for (let i = e.resultIndex; i < e.results.length; i++) {{
+              if (e.results[i].isFinal) txt += e.results[i][0].transcript + " ";
+            }}
+            box.value = (box.value ? box.value + " " : "") + txt.trim();
+          }};
+          recog.onend = () => {{ listening = false; btn.textContent = "🎙️ تسجيل صوتي (عربي)"; st.textContent = "تم حفظ النص في الخانة"; }};
+          recog.onerror = (e) => {{ listening = false; btn.textContent = "🎙️ تسجيل صوتي (عربي)"; st.textContent = "خطأ: " + e.error; }};
+          recog.start();
+        }}
+      </script>
 
       <button type="submit" class="btn btn-ok">إرسال التقييم والملاحظة</button>
     </form>

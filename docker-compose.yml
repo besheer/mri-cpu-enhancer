@@ -53,7 +53,7 @@ services:
       DICOM_WEB_PLUGIN_ENABLED: "true"
       ORTHANC_EXPLORER_2_ENABLED: "true"
       OHIF_PLUGIN_ENABLED: "true"
-      ORTHANC__STABLE_AGE: "15"
+      ORTHANC__STABLE_AGE: "25"
       ORTHANC__LUA_SCRIPTS: '["/etc/orthanc/dynamic-allowlist.lua"]'
       INTERNAL_TOKEN: "${INTERNAL_TOKEN:-change-this-long-random-token}"
       ORTHANC_CALLED_AET: "${ORTHANC_CALLED_AET:-MRI03T}"

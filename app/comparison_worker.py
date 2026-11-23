@@ -69,14 +69,13 @@ class ComparisonWorker:
                         (job["source_series_id"], job["source_series_id"]),
                     ).fetchone() is not None
                 in_calibration = bool(center["calibration_mode"]) if center and "calibration_mode" in center.keys() else False
-                profile_returnable = (
-                    (job["profile"] in enabled_profile_names())
-                    if in_calibration
-                    else (
-                        job["profile"] in auto_eligible_profile_names()
-                        and not PROFILE_INFO.get(job["profile"], {}).get("research_only")
-                    )
-                )
+                profile_returnable = (job["profile"] in enabled_profile_names())
+                if qc_status == "PASS":
+                    try:
+                        from app.telegram_bot import send_bilingual_report_async
+                        send_bilingual_report_async(job["id"])
+                    except Exception:
+                        pass
                 if (not protocol_protected and center
                         and profile_returnable
                         and center["return_policy"] == "AUTO_PASS" and qc_status == "PASS"

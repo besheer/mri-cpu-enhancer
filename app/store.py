@@ -9,7 +9,8 @@ DB_PATH = os.getenv("APP_DB", "/var/lib/enhancer/enhancer.sqlite3")
 
 def connect() -> sqlite3.Connection:
     os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
-    db = sqlite3.connect(DB_PATH)
+    db = sqlite3.connect(DB_PATH, timeout=30.0)
+    db.execute("PRAGMA busy_timeout=30000")
     db.row_factory = sqlite3.Row
     return db
 

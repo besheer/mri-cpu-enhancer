@@ -22,6 +22,7 @@ def resolve_scan_profile_and_strength(
     default_strength: str,
     auto_allowed: set[str],
     enabled_set: set[str],
+    is_fast_scan: bool = False,
 ) -> tuple[str, str]:
     """Dedicated per-scan Smart Routing based on clinic-validated preferences."""
     import re
@@ -33,6 +34,9 @@ def resolve_scan_profile_and_strength(
     is_pd = ("PD" in u or "PROTON" in u)
     is_stir = any(k in u for k in ("STIR", "FAT", "SPAIR", "FATSAT")) or bool(re.search(r"(?:^|[\s_\-/])FS(?:$|[\s_\-/])", u))
 
+    is_fast_mri = is_fast_scan or any(k in u for k in ("FASTMRI", "FAST_MRI", "FAST ", "QUICK"))
+    if is_fast_mri and not is_mrv and "RAD4AI_FAST_MRI" in enabled_set:
+        return "RAD4AI_FAST_MRI", "STRONG"
     if is_mrv and "RICIAN_NLM_VST" in (auto_allowed & enabled_set):
         return "RICIAN_NLM_VST", "STRONG"
     if is_brain and "RICIAN_NLM_VST" in (auto_allowed & enabled_set):
@@ -41,7 +45,11 @@ def resolve_scan_profile_and_strength(
         if is_pd:
             return "RAD4AI_SPINE_PRO", "STRONG"
         if is_stir and "FLAIR" not in u:
-            return "RAD4AI_SPINE_PRO", "MILD"  # Clinic-approved L1 for STIR
+            if "RAD4AI_PRINT_MASTER" in enabled_set:
+                return "RAD4AI_PRINT_MASTER", "MEDIUM"  # Technician-approved L4 high-contrast S-curve + bone grain for STIR
+            return "RAD4AI_SPINE_PRO", "MILD"
+        if "T1" in u and "RAD4AI_PRINT_MASTER" in enabled_set:
+            return "RAD4AI_PRINT_MASTER", "MEDIUM"
         if "T2" in u or "T1" in u:
             return "RAD4AI_SPINE_PRO", "STRONG"
     return profile, strength
@@ -75,11 +83,68 @@ class IntakeWorker:
                 continue
             try:
                 self.scan_once()
+                self._check_and_execute_pending_orders()
                 self.last_error = None
             except Exception as exc:
                 self.last_error = str(exc)
                 log.exception("Inbound scan failed")
             self.stop_event.wait(self.interval)
+
+    def _check_and_execute_pending_orders(self) -> None:
+        """Periodically checks and auto-executes technician orders between scans."""
+        try:
+            last_id = int(setting("last_server_executed_feedback_id", "0") or "0")
+            with connect() as db:
+                rows = db.execute(
+                    "SELECT id, patient_name, verdict, note, series_description FROM feedback_events WHERE id > ? ORDER BY id ASC LIMIT 5",
+                    (last_id,)
+                ).fetchall()
+                if not rows:
+                    return
+
+                from app.store import set_setting
+                for r in rows:
+                    fid = int(r["id"])
+                    note = str(r["note"] or "")
+                    set_setting("last_server_executed_feedback_id", str(fid))
+
+                    action_kws = ("نعم", "نعومه", "خشن", "خشونه", "فتح", "بيض", "سواد", "ابعت", "تعديل", "احسن", "جوده", "كونترست", "بروتون", "برتون", "اكسيل", "اكسل", "جردينت", "ركبه", "عظم", "فقرات")
+                    if not any(k in note for k in action_kws):
+                        continue
+
+                    t_row = None
+                    if any(k in note for k in ("بروتون", "برتون", "pd", "ركبه")):
+                        t_row = db.execute("SELECT series_id, description FROM inbound_series WHERE description LIKE '%PD%' OR description LIKE '%PROTON%' ORDER BY received_at DESC LIMIT 1").fetchone()
+                    elif any(k in note for k in ("اكسيل", "اكسل", "axial", "جردينت", "سواد")):
+                        t_row = db.execute("SELECT series_id, description FROM inbound_series WHERE description LIKE '%AX%' OR description LIKE '%GRE%' ORDER BY received_at DESC LIMIT 1").fetchone()
+                    elif any(k in note for k in ("فقرات", "عنقيه", "قطنيه", "t1", "t2")):
+                        t_row = db.execute("SELECT series_id, description FROM inbound_series WHERE description LIKE '%SAG%' OR description LIKE '%FL08%' ORDER BY received_at DESC LIMIT 1").fetchone()
+                    if not t_row:
+                        t_row = db.execute("SELECT series_id, description FROM inbound_series ORDER BY received_at DESC LIMIT 1").fetchone()
+
+                    if t_row:
+                        sid = t_row["series_id"]
+                        db.execute("UPDATE comparison_jobs SET archived=1, status='superseded' WHERE source_series_id=? AND status IN ('queued','processing')", (sid,))
+                        cur = db.execute(
+                            "INSERT INTO comparison_jobs(source_series_id, profile, strength, acknowledged) VALUES(?, 'RAD4AI_3T_HD', 'STRONG', 1)",
+                            (sid,)
+                        )
+                        new_jid = int(cur.lastrowid)
+                        audit("AUTO_SERVER_EXEC_ORDER", "comparison_job", str(new_jid), f"fid={fid};note={note[:50]}")
+                        log.info("Auto-executed technician order from feedback #%d on series %s -> Job #%d", fid, t_row["description"], new_jid)
+                        try:
+                            from app.telegram_bot import send_telegram_notification
+                            send_telegram_notification(
+                                f"📥 *تم استقبال التعديلات برقم `#{fid}`!*\n"
+                                f"⚙️ *جاري العمل على التعديلات فوراً على السلسلة:* `{t_row['description']}`\n"
+                                f"• طلب الفني: _{note}_\n"
+                                f"• رقم فحص التشغيل: `#{new_jid}`\n"
+                                f"• سيتم إرسال الصور المعالجة تلقائياً لجهاز GE AW وتأكيد الإرسال."
+                            )
+                        except Exception:
+                            pass
+        except Exception as exc:
+            log.warning("Server periodic feedback check error: %s", exc)
 
     def scan_once(self) -> None:
         with httpx.Client(auth=self.auth, timeout=120) as api:
@@ -199,9 +264,21 @@ class IntakeWorker:
                 instances = series.get("Instances", [])
                 if not instances:
                     continue
+                grew_from = None
                 with connect() as db:
-                    if db.execute("SELECT 1 FROM inbound_series WHERE series_id=?", (sid,)).fetchone():
-                        continue
+                    existing_row = db.execute(
+                        "SELECT instances, status FROM inbound_series WHERE series_id=?",
+                        (sid,),
+                    ).fetchone()
+                    if existing_row:
+                        prev_inst = int(existing_row["instances"] or 0)
+                        if len(instances) > prev_inst and str(existing_row["status"] or "") not in ("SKIPPED_LOCALIZER",):
+                            db.execute("DELETE FROM inbound_series WHERE series_id=?", (sid,))
+                            grew_from = prev_inst
+                        else:
+                            continue
+                if grew_from is not None:
+                    audit("SERIES_GREW_REPROCESS", "series", sid, f"prev={grew_from};now={len(instances)}")
                 origin = api.get(f"{self.url}/instances/{instances[0]}/metadata/1024")
                 source_aet = origin.text.strip() if origin.status_code == 200 else ""
                 center = get_center_by_aet(source_aet) if source_aet else None
@@ -229,6 +306,17 @@ class IntakeWorker:
                         study_desc = ""
                 auto_allowed = auto_eligible_profile_names()
                 enabled_set = enabled_profile_names()
+                is_fast_scan = False
+                try:
+                    t_r = api.get(f"{self.url}/instances/{instances[0]}/simplified-tags")
+                    if t_r.status_code == 200:
+                        tj = t_r.json()
+                        nex = float(tj.get("NumberOfAverages") or 2.0)
+                        dur = float(tj.get("AcquisitionDuration") or 999999999.0)
+                        if False:
+                            is_fast_scan = True
+                except Exception:
+                    pass
                 profile, strength = resolve_scan_profile_and_strength(
                     study_desc,
                     u_desc,
@@ -236,6 +324,7 @@ class IntakeWorker:
                     center["auto_strength"],
                     auto_allowed,
                     enabled_set,
+                    is_fast_scan=is_fast_scan,
                 )
                 if profile not in PROFILES or (profile not in auto_allowed and profile not in enabled_set):
                     with connect() as db:
@@ -263,7 +352,28 @@ class IntakeWorker:
                         db.execute("UPDATE inbound_series SET status='QUEUED',job_id=?,updated_at=CURRENT_TIMESTAMP WHERE series_id=?", (job_id, sid))
                     audit("AUTO_CALIBRATION_QUEUED", "series", sid, f"jobs={job_ids};profile={profile}")
                 else:
-                    job_id = enqueue_comparison(sid, profile, strength, acknowledged=(strength == "STRONG"))
+                    specs = [(profile, strength)]
+                    candidates = [
+                        ("RAD4AI_3T_HD", "STRONG"),
+                        ("RAD4AI_FAST_MRI", "STRONG"),
+                        ("RAD4AI_PRINT_MASTER", "MEDIUM"),
+                        ("RAD4AI_SPINE_PRO", "STRONG"),
+                    ]
+                    for cand_prof, cand_str in candidates:
+                        if len(specs) >= 3:
+                            break
+                        if cand_prof != profile and cand_prof in enabled_set:
+                            specs.append((cand_prof, cand_str))
+                    job_ids = [
+                        enqueue_comparison(
+                            sid,
+                            p,
+                            lvl,
+                            acknowledged=(lvl == "STRONG" or bool(PROFILE_INFO.get(p, {}).get("research_only"))),
+                        )
+                        for p, lvl in specs
+                    ]
+                    job_id = job_ids[0]
                     with connect() as db:
                         db.execute("UPDATE inbound_series SET status='QUEUED',job_id=?,updated_at=CURRENT_TIMESTAMP WHERE series_id=?", (job_id, sid))
-                    audit("AUTO_ENHANCE_QUEUED", "series", sid, f"job={job_id};profile={profile};strength={strength}")
+                    audit("AUTO_ENHANCE_QUEUED", "series", sid, f"jobs={job_ids};profile={profile};strength={strength}")

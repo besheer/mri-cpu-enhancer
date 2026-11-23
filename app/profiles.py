@@ -10,11 +10,13 @@ from app.enhancer import conservative_baseline
 PROFILE_INFO = {
     "RICIAN_NLM_VST": {"label": "RAD4AI Rician-VST + Non-Local Means (Physics Safe)", "guidance": "Donoho Haar-MAD sigma estimation + Unbiased Rician VST + Integral-Image Non-Local Means & Tangent Coherence (Zero synthetic texture).", "min_slices": 1, "research_only": False, "auto_eligible": True},
     "AI_SWIFT_DENOISE": {"label": "RAD4AI Denoise (2.5D NAFNet + Rician VST)", "guidance": "2.5D multi-slice deep learning + Rician VST denoising with auto-sequence intelligence.", "min_slices": 1, "research_only": False, "auto_eligible": False},
+    "RAD4AI_FAST_MRI": {"label": "RAD4AI FastMRI (Short-Time & Motion Clean)", "guidance": "Ultra-clean denoising for low-NEX / fast MRI scans with SCIC illumination, crisp cord/CSF borders, and zero raw noise.", "min_slices": 1, "research_only": False, "auto_eligible": True},
     "RAD4AI_SPINE_PRO": {"label": "RAD4AI Spine & Ortho Pro (High-Clarity)", "guidance": "2.5D ultra-smooth marrow/muscle Rician debiasing + tangent-coherent disc/root borders + coil shading equalization.", "min_slices": 1, "research_only": False, "auto_eligible": True},
-    "RAD4AI_3T_HD": {"label": "RAD4AI 3T-HD True Anatomy (Anisotropic Tangent-Restore)", "guidance": "Structure-tensor tangent curve restoration + Rician debiasing + Non-Local Means (requires research/display acknowledgment).", "min_slices": 1, "research_only": True, "auto_eligible": False},
+    "RAD4AI_3T_HD": {"label": "RAD4AI 3T-HD True Anatomy (Anisotropic Tangent-Restore)", "guidance": "Structure-tensor tangent curve restoration + Rician debiasing + Non-Local Means (clinic-approved).", "min_slices": 1, "research_only": False, "auto_eligible": True},
+    "RAD4AI_ENH6_ULTRA": {"label": "RAD4AI ENH-6 Ultra (AIR Recon DL / Myelo 3T)", "guidance": "Myelographic CSF luminescence + Sub-pixel 1px cortical shock compression + Velvet soft-tissue denoise (Target 3T Reference Quality).", "min_slices": 1, "research_only": False, "auto_eligible": True},
     "RAD4AI_SR_15T": {"label": "RAD4AI Display Upscale (1.5T Matrix View — Display Only)", "guidance": "Bicubic matrix upscale + acutance + 2.5D Rician suppression for display review (requires research/display acknowledgment).", "min_slices": 1, "research_only": True, "auto_eligible": False},
     "RAD4AI_GE_AW": {"label": "RAD4AI Coil-Equalized Rician Denoise (SCIC + VST)", "guidance": "Rician-VST + Structure-Tensor denoising with homomorphic coil illumination equalization (SCIC) and zero-floor background.", "min_slices": 1, "research_only": False, "auto_eligible": False},
-    "RAD4AI_PRINT_MASTER": {"label": "RAD4AI Print-Master Ultra (Display / Film Print Only)", "guidance": "Display/Print-only S-curve contrast + zero-grain velvet tissue + zero-floor background (requires research/display acknowledgment).", "min_slices": 1, "research_only": True, "auto_eligible": False},
+    "RAD4AI_PRINT_MASTER": {"label": "RAD4AI Print-Master Ultra (Display / Film Print Only)", "guidance": "Display/Print-only S-curve contrast + zero-grain velvet tissue + zero-floor background (clinic-approved for STIR).", "min_slices": 1, "research_only": False, "auto_eligible": True},
     "BASE_MILD": {"label": "Conservative Baseline", "guidance": "Safe reference filter suitable for initial baseline comparison.", "min_slices": 1, "research_only": False, "auto_eligible": False},
     "DENOISE_MEDIUM": {"label": "Medium Denoise", "guidance": "For noticeably noisy scans; review fine anatomical borders.", "min_slices": 1, "research_only": False, "auto_eligible": True},
     "EDGE_DENOISE_MILD": {"label": "Edge-Preserving Denoise", "guidance": "Conservative noise reduction with curvature anisotropic edge protection.", "min_slices": 1, "research_only": False, "auto_eligible": True},
@@ -55,8 +57,10 @@ def validate_selection(profile: str, description: str, instances: int, acknowled
 PREFIXES = {
     "RICIAN_NLM_VST": "ENHANC-RNLM-",
     "RAD4AI_3T_HD": "ENHANC-3THD-",
+    "RAD4AI_ENH6_ULTRA": "ENH6-ULTRA-",
     "RAD4AI_PRINT_MASTER": "ENHANC-PRINT-",
     "AI_SWIFT_DENOISE": "ENHANC-RAD4AI-",
+    "RAD4AI_FAST_MRI": "ENHANC-FASTMRI-",
     "RAD4AI_SPINE_PRO": "ENHANC-RAD4AI-PRO-",
     "RAD4AI_SR_15T": "ENHANC-RAD4AI-SR-",
     "RAD4AI_GE_AW": "ENHANC-RAD4AI-GEAW-",
@@ -129,13 +133,15 @@ def process_volume(volume: np.ndarray, profile: str, strength: str = "MEDIUM",
     started = time.perf_counter()
     source = volume
     seq_detected = "GENERAL_MR"
-    if profile in {"RICIAN_NLM_VST", "AI_SWIFT_DENOISE", "RAD4AI_SPINE_PRO", "RAD4AI_SR_15T", "RAD4AI_GE_AW", "RAD4AI_PRINT_MASTER", "RAD4AI_3T_HD"}:
+    if profile in {"RICIAN_NLM_VST", "AI_SWIFT_DENOISE", "RAD4AI_FAST_MRI", "RAD4AI_SPINE_PRO", "RAD4AI_SR_15T", "RAD4AI_GE_AW", "RAD4AI_PRINT_MASTER", "RAD4AI_3T_HD", "RAD4AI_ENH6_ULTRA"}:
         from app.ai_engine import ai_engine
         strength_val = {"MILD": 0.5, "MEDIUM": 0.8, "STRONG": 1.0}[strength]
         mode = (
             "rician_nlm" if profile == "RICIAN_NLM_VST"
+            else "enh6_ultra" if profile == "RAD4AI_ENH6_ULTRA"
             else "3t_hd" if profile == "RAD4AI_3T_HD"
             else "print_master" if profile == "RAD4AI_PRINT_MASTER"
+            else "fast_mri" if profile == "RAD4AI_FAST_MRI"
             else "spine_pro" if profile == "RAD4AI_SPINE_PRO"
             else "sr_15t" if profile == "RAD4AI_SR_15T"
             else "ge_aw" if profile == "RAD4AI_GE_AW"

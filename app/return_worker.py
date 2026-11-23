@@ -79,10 +79,11 @@ class ReturnWorker:
                     if _cj:
                         _m = _json.loads(_cj["metrics_json"] or "{}")
                         _cap = (
-                            f"✅ *تم الإرسال إلى GE (`{job['return_aet']}`) — قبل (يسار) | بعد (يمين)*\n"
-                            f"• السلسلة: `{_cj['desc'] or '-'}` (`#{_cj['id']}`)\n"
-                            f"• البروفايل: `{_cj['profile']}` ({_cj['strength']}) | QC: *{_cj['qc_status']}*\n"
-                            f"• الحواف: `{_m.get('edge_preservation_percent', '-')}%` | الضوضاء: `{_m.get('noise_change_percent', '-')}%`"
+                            f"✅ *تم الانتهاء من تنفيذ التعديلات وإرسالها لجهاز GE (`{job['return_aet']}`) بنجاح!*\n"
+                            f"• السلسلة المعالجة: `{_cj['desc'] or '-'}` (`#{_cj['id']}`)\n"
+                            f"• البروفايل المطبق: `{_cj['profile']}` ({_cj['strength']}) | جودة الفحص: *{_cj['qc_status']}*\n"
+                            f"• الحواف: `{_m.get('edge_preservation_percent', '-')}%` | تخفيض الضوضاء: `{_m.get('noise_change_percent', '-')}%`\n"
+                            f"• الفحص جاهز الآن على محطة العمل GE Advantage Workstation."
                         )
                         _sent_cnt = 0
                         if _cj["source_series_id"] and _cj["output_series_id"]:

@@ -237,15 +237,17 @@ class MRIAIEngine:
                 crisp_mult = 1.2 if strength <= 0.6 else 1.6 if strength <= 0.85 else 2.0
                 enhanced = np.clip(enhanced + (crisp_boost * crisp_mult) * clean_detail * crisp_gate, 0.0, 1.0)
 
-            # T2 Fluid Purity & Whiteness Boost
+            # T2 Fluid Purity & Cord Contrast Boost (Technician feedback 2026-11-25: عايز تى تو خشنه شويه العظم وكونترست للكورد)
             if seq_type in ("T2_FSE", "T2_STAR_GRE"):
                 if mode == "enh6_ultra":
-                    # Luminous Myelographic CSF Pure White (0.95 - 1.00) while keeping spinal cord / nerve roots dark & crisp
                     csf_fluid_mask = np.clip((enhanced - 0.38) / 0.24, 0.0, 1.0) ** 1.25
                     enhanced = np.clip(enhanced * (1.0 + 0.42 * csf_fluid_mask), 0.0, 1.0)
                 else:
                     fluid_mask = np.clip((enhanced - 0.46) / 0.26, 0.0, 1.0) ** 1.1
-                    enhanced = np.clip(enhanced * (1.0 + 0.26 * fluid_mask), 0.0, 1.0)
+                    enhanced = np.clip(enhanced * (1.0 + 0.28 * fluid_mask), 0.0, 1.0)
+                # Cord / Thecal root contrast enhancement against CSF
+                cord_mask = np.clip((enhanced - 0.16) / 0.16, 0.0, 1.0) * np.clip((0.50 - enhanced) / 0.16, 0.0, 1.0)
+                enhanced = np.clip(enhanced * (1.0 - 0.09 * cord_mask * edge_mask), 0.0, 1.0)
 
             # ENH-6 Kramer-Bruckner Morphological Shock Filter for Sub-pixel 1px Cortical/Disc Rim Sharpness
             if mode == "enh6_ultra":
@@ -289,13 +291,27 @@ class MRIAIEngine:
             tissue_mask = np.clip(norm_work / 0.08, 0.0, 1.0)
             if seq_type == "PD_ORTHO":
                 # Dual-tissue adaptive grain (#152: تنعم البروتون وتخشن العظم)
-                # Bone marrow gets authentic 32% trabecular grain; meniscus/cartilage/ligaments get 6% velvet smooth
                 bone_marrow_mask = np.clip((norm_work - 0.20) / 0.12, 0.0, 1.0) * np.clip((0.74 - norm_work) / 0.12, 0.0, 1.0)
                 effective_grain = (1.0 - bone_marrow_mask) * 0.06 + bone_marrow_mask * 0.32
                 pd_gate = np.clip(edge_mask ** 0.85, 0.08, 1.0) * (1.0 - bone_marrow_mask) + bone_marrow_mask * np.clip(0.55 + 0.45 * edge_mask, 0.55, 1.0)
                 enhanced = np.clip(enhanced + (effective_grain * tissue_mask * pd_gate) * texture_residual, 0.0, 1.0)
+            elif seq_type in ("T2_FSE", "T2_STAR_GRE"):
+                # Technician feedback 2026-11-25: عايز تى تو خشنه شويه العظم (Bone marrow 36% grain, CSF/soft tissue smooth)
+                bone_marrow_mask = np.clip((norm_work - 0.18) / 0.14, 0.0, 1.0) * np.clip((0.68 - norm_work) / 0.14, 0.0, 1.0)
+                effective_grain = (1.0 - bone_marrow_mask) * 0.10 + bone_marrow_mask * 0.36
+                t2_gate = np.clip(edge_mask ** 0.85, 0.10, 1.0) * (1.0 - bone_marrow_mask) + bone_marrow_mask * np.clip(0.55 + 0.45 * edge_mask, 0.55, 1.0)
+                enhanced = np.clip(enhanced + (effective_grain * tissue_mask * t2_gate) * texture_residual, 0.0, 1.0)
+            elif seq_type == "STIR_FLAIR":
+                # Technician feedback 2026-11-25: Stair عايز ننعم السوفت ونعمل كونترست العظم
+                # Soft tissue gets velvet smooth (0.04 grain), bone marrow edema gets authentic high-contrast definition
+                bone_edema_mask = np.clip((norm_work - 0.20) / 0.16, 0.0, 1.0) * np.clip((0.85 - norm_work) / 0.16, 0.0, 1.0)
+                effective_grain = (1.0 - bone_edema_mask) * 0.04 + bone_edema_mask * 0.26
+                stir_gate = np.clip(edge_mask ** 0.70, 0.08, 1.0)
+                enhanced = np.clip(enhanced + (effective_grain * tissue_mask * stir_gate) * texture_residual, 0.0, 1.0)
+                # Boost bone marrow contrast in STIR
+                enhanced = np.clip(enhanced * (1.0 + 0.18 * bone_edema_mask), 0.0, 1.0)
             else:
-                texture_gate = np.clip(0.55 + 0.45 * edge_mask, 0.55, 1.0) if seq_type in ("T2_STAR_GRE", "T2_FSE", "T1_SE") else np.clip(edge_mask ** 0.70, 0.12, 1.0) if seq_type == "STIR_FLAIR" else np.clip(0.35 + 0.65 * edge_mask, 0.35, 1.0)
+                texture_gate = np.clip(0.55 + 0.45 * edge_mask, 0.55, 1.0) if seq_type == "T1_SE" else np.clip(0.35 + 0.65 * edge_mask, 0.35, 1.0)
                 enhanced = np.clip(enhanced + (grain_ratio * tissue_mask * texture_gate) * texture_residual, 0.0, 1.0)
 
             # ENH-6 3T High-Field Dynamic S-Curve (Rich marrow + Brilliant CSF + Pure black air)

@@ -45,9 +45,12 @@ def resolve_scan_profile_and_strength(
         if is_pd:
             return "RAD4AI_SPINE_PRO", "STRONG"
         if is_stir and "FLAIR" not in u:
-            if "RAD4AI_PRINT_MASTER" in enabled_set:
-                return "RAD4AI_PRINT_MASTER", "MEDIUM"  # Technician-approved L4 high-contrast S-curve + bone grain for STIR
-            return "RAD4AI_SPINE_PRO", "MILD"
+            # Technician feedback 2026-11-25: STIR requires velvet soft-tissue denoise + bone marrow contrast, not film S-curve
+            if "RAD4AI_SPINE_PRO" in enabled_set:
+                return "RAD4AI_SPINE_PRO", "STRONG"
+            if "RAD4AI_3T_HD" in enabled_set:
+                return "RAD4AI_3T_HD", "STRONG"
+            return "RAD4AI_SPINE_PRO", "STRONG"
         if "T1" in u and "RAD4AI_PRINT_MASTER" in enabled_set:
             return "RAD4AI_PRINT_MASTER", "MEDIUM"
         if "T2" in u or "T1" in u:
@@ -354,11 +357,12 @@ class IntakeWorker:
                 else:
                     specs = [(profile, strength)]
                     candidates = [
+                        ("RAD4AI_SPINE_PRO", "STRONG"),
                         ("RAD4AI_3T_HD", "STRONG"),
                         ("RAD4AI_FAST_MRI", "STRONG"),
-                        ("RAD4AI_PRINT_MASTER", "MEDIUM"),
-                        ("RAD4AI_SPINE_PRO", "STRONG"),
                     ]
+                    if not is_stir and "RAD4AI_PRINT_MASTER" in enabled_set:
+                        candidates.append(("RAD4AI_PRINT_MASTER", "MEDIUM"))
                     for cand_prof, cand_str in candidates:
                         if len(specs) >= 3:
                             break

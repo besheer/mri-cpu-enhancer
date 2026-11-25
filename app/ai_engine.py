@@ -356,15 +356,20 @@ class MRIAIEngine:
             raw_norm_slices.append(norm)
 
             if seq_type != "STIR_FLAIR" and mode in ("sr_15t", "ge_aw", "print_master", "3t_hd", "spine_pro", "fast_mri", "enh6_ultra"):
-                # GE PURE / SCIC Surface Coil Shading Equalization (lifts posterior/inferior coil drop-off without brightening air)
-                illum = gaussian_filter(norm, sigma=max(14.0, min(norm.shape) / 8.0))
-                fg = norm > 0.08
-                if np.any(fg):
-                    ref_illum = float(np.median(illum[fg]))
-                    coil_gain = np.clip(ref_illum / np.maximum(illum, ref_illum * 0.32), 0.88, 1.80)
-                    gain_weight = 0.65 if mode in ("print_master", "3t_hd", "fast_mri") else 0.62 if mode in ("ge_aw", "spine_pro") else 0.35
+                # True Normalized-Convolution GE PURE / SCIC Coil Equalization (zero black-air dilution at skin borders!)
+                fg = (norm > 0.07).astype(np.float32)
+                if np.sum(fg) > 200:
+                    sig_il = max(12.0, min(norm.shape) / 9.5)
+                    num_il = gaussian_filter(norm * fg, sigma=sig_il)
+                    den_il = np.maximum(gaussian_filter(fg, sigma=sig_il), 0.08)
+                    illum = num_il / den_il
+                    ref_illum = float(np.median(illum[fg > 0.5]))
+                    # Compress blinding near-coil fat hot-spots (down to 0.56) & gently lift shaded anatomy (up to 1.32)
+                    coil_gain = np.clip(ref_illum / np.maximum(illum, ref_illum * 0.45), 0.56, 1.32)
+                    gain_weight = np.where(coil_gain < 1.0, 0.72, 0.42 if mode in ("print_master", "3t_hd", "fast_mri", "spine_pro", "ge_aw") else 0.28)
                     fg_soft = np.clip((norm - 0.04) / 0.06, 0.0, 1.0)
-                    eff_gain = 1.0 + fg_soft * gain_weight * (coil_gain - 1.0)
+                    hi_protect = np.where(coil_gain > 1.0, np.clip((0.88 - norm) / 0.36, 0.0, 1.0), 1.0)
+                    eff_gain = 1.0 + fg_soft * gain_weight * hi_protect * (coil_gain - 1.0)
                     norm_work = np.clip(norm * eff_gain, 0.0, 1.0).astype(np.float32)
                 else:
                     norm_work = norm
@@ -432,24 +437,25 @@ class MRIAIEngine:
             # Coherent Edge Deblurring (computed on the denoised signal curr_clean, NEVER on raw noisy norm_work!)
             if crisp_boost > 0:
                 sigma_detail = 0.75 if mode in ("sr_15t", "3t_hd") else 0.85
-                # Clamp positive detail tightly (+0.015) and roll off near peak brightness to prevent hyperintense/bleed-like spots
-                clean_detail = np.clip(curr_clean - gaussian_filter(curr_clean, sigma=sigma_detail), -0.030, 0.015)
-                peak_rolloff = np.clip((1.02 - curr_clean) / 0.25, 0.25, 1.0)
-                crisp_gate = edge_mask * peak_rolloff
+                raw_det = curr_clean - gaussian_filter(curr_clean, sigma=sigma_detail)
+                # Keep full negative detail (-0.048) inside bright CSF/fat so dark nerve roots & septa stay crisp, while rolling off positive bright spikes!
+                pos_rolloff = np.clip((0.95 - curr_clean) / 0.30, 0.15, 1.0)
+                clean_detail = np.where(raw_det < 0, np.clip(raw_det, -0.048, 0.0), np.clip(raw_det, 0.0, 0.014) * pos_rolloff)
                 crisp_mult = 1.2 if strength <= 0.6 else 1.6 if strength <= 0.85 else 2.0
-                enhanced = np.clip(enhanced + (crisp_boost * crisp_mult) * clean_detail * crisp_gate, 0.0, 1.0)
+                enhanced = np.clip(enhanced + (crisp_boost * crisp_mult) * clean_detail * (0.20 + 0.80 * edge_mask), 0.0, 1.0)
 
-            # T2 Fluid Purity & Cord Contrast Boost (Technician feedback 2026-11-25: عايز تى تو خشنه شويه العظم وكونترست للكورد)
+            # T2 Fluid Purity & Cord Contrast with Highlight-Preserving Soft Shoulder (zero white burnout!)
             if seq_type in ("T2_FSE", "T2_STAR_GRE"):
                 if mode == "enh6_ultra":
-                    csf_fluid_mask = np.clip((enhanced - 0.38) / 0.24, 0.0, 1.0) ** 1.25
-                    enhanced = np.clip(enhanced * (1.0 + 0.42 * csf_fluid_mask), 0.0, 1.0)
+                    csf_fluid_mask = np.clip((enhanced - 0.45) / 0.28, 0.0, 1.0) ** 1.3
+                    # Soft-shoulder lift: (1 - enhanced) preserves 100% of internal nerve-root & fat-septa detail without clipping
+                    enhanced = np.clip(enhanced + 0.45 * csf_fluid_mask * (1.0 - enhanced), 0.0, 1.0)
                 else:
-                    fluid_mask = np.clip((enhanced - 0.46) / 0.26, 0.0, 1.0) ** 1.1
-                    enhanced = np.clip(enhanced * (1.0 + 0.28 * fluid_mask), 0.0, 1.0)
-                # Cord / Thecal root contrast enhancement against CSF
-                cord_mask = np.clip((enhanced - 0.16) / 0.16, 0.0, 1.0) * np.clip((0.50 - enhanced) / 0.16, 0.0, 1.0)
-                enhanced = np.clip(enhanced * (1.0 - 0.09 * cord_mask * edge_mask), 0.0, 1.0)
+                    fluid_mask = np.clip((enhanced - 0.56) / 0.28, 0.0, 1.0) ** 1.35
+                    enhanced = np.clip(enhanced + 0.12 * fluid_mask * (1.0 - enhanced), 0.0, 1.0)
+                # Cord & cauda equina nerve-root dark delineation inside bright CSF
+                cord_mask = np.clip((enhanced - 0.16) / 0.16, 0.0, 1.0) * np.clip((0.62 - enhanced) / 0.18, 0.0, 1.0)
+                enhanced = np.clip(enhanced * (1.0 - 0.10 * cord_mask * edge_mask), 0.0, 1.0)
 
             # ENH-6 Kramer-Bruckner Morphological Shock Filter for Sub-pixel 1px Cortical/Disc Rim Sharpness
             if mode == "enh6_ultra":
@@ -541,16 +547,18 @@ class MRIAIEngine:
                 vessel_mask = np.clip((enhanced - 0.18) / 0.25, 0.0, 1.0)
                 enhanced = np.clip(enhanced * (1.0 - 0.12 * (1.0 - vessel_mask)) + 0.06 * vessel_mask * (enhanced ** 0.85), 0.0, 1.0)
 
-            # Clinical axial & T1 adjustments requested by technician (#120 & #124)
+            # Highlight-safe clinical tone curves (zero white clipping — preserves all fat septa & nerve roots!)
             if is_axial:
-                # Reduce noise & brighten spinal canal / foramina in axial views
-                enhanced = np.clip(np.power(enhanced, 0.82) * 1.08, 0.0, 1.0)
+                # Lift ONLY dark canal/foraminal shadows (<0.52), gently compress glaring fat highlights (>0.75)
+                shadow_lift = 0.045 * np.sin(np.pi * np.clip(enhanced / 0.52, 0.0, 1.0)) * (enhanced < 0.52)
+                hi_tame = -0.045 * ((np.clip((enhanced - 0.72) / 0.28, 0.0, 1.0)) ** 1.4)
+                enhanced = np.clip(enhanced + shadow_lift + hi_tame, 0.0, 1.0)
             if seq_type == "T1_SE" and mode != "print_master":
-                # Boost T1 contrast: rich bright marrow/fat and deep dark CSF/discs
-                enhanced = np.clip(np.power(enhanced, 1.10) * 1.08, 0.0, 1.0)
+                # Anchored contrast (0->0, 1->1) with soft highlight shoulder so subcutaneous coil fat never burns out
+                enhanced = np.clip(np.power(enhanced, 1.08), 0.0, 1.0)
+                enhanced = enhanced - 0.05 * ((np.clip((enhanced - 0.75) / 0.25, 0.0, 1.0)) ** 1.5)
             if seq_type == "PD_ORTHO" and mode != "print_master":
-                # Boost PD contrast & smooth cartilage/meniscus tissue (#127)
-                enhanced = np.clip(np.power(enhanced, 1.08) * 1.06, 0.0, 1.0)
+                enhanced = np.clip(np.power(enhanced, 1.06), 0.0, 1.0)
 
             # Technician-calibrated Brightness & Contrast adjustment (default 1.0 / 1.0 = no-op)
             try:

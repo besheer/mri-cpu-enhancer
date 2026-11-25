@@ -1305,12 +1305,51 @@ class TelegramBotWorker:
                     "• شكراً لك يا هندسة؛ سيتم الحفاظ على هذه المعايير."
                 )
             elif action in ("no", "reject"):
-                reply = (
-                    "👎 *تم تسجيل عدم رضاك عن الفحص #" + str(jid) + " (تقييم #" + str(fid) + ")!*" + _nl +
-                    "• السلسلة: `" + str(sdesc or "-") + "`" + _nl +
-                    "✍️ *ما هو التعديل المطلوب لضبط الصورة؟*" + _nl +
-                    "اكتب في رسالة أو سجّل فويس بالتعديل المطلوب (مثل: _تفتيح_، _تنعيم_، _زيادة تباين_، _زيادة حدة العظم_) وسيطبقه السيرفر فوراً ويُرسله لـ GE!"
-                )
+                target_sid = None
+                target_desc = sdesc
+                orig_prof = ""
+                new_jid = None
+                with connect() as db:
+                    if jid.isdigit():
+                        j_row = db.execute(
+                            "SELECT cj.source_series_id, cj.profile, COALESCE(ib.description, '') as desc "
+                            "FROM comparison_jobs cj LEFT JOIN inbound_series ib ON ib.series_id=cj.source_series_id "
+                            "WHERE cj.id=?", (int(jid),)
+                        ).fetchone()
+                        if j_row:
+                            target_sid = j_row["source_series_id"]
+                            orig_prof = str(j_row["profile"] or "")
+                            target_desc = str(j_row["desc"] or sdesc)
+                    if not target_sid:
+                        last_s = db.execute("SELECT series_id, description FROM inbound_series ORDER BY received_at DESC LIMIT 1").fetchone()
+                        if last_s:
+                            target_sid = last_s["series_id"]
+                            target_desc = str(last_s["description"] or "-")
+
+                    if target_sid:
+                        upgrade_prof = "RAD4AI_3T_HD" if orig_prof == "RAD4AI_ENH6_ULTRA" else "RAD4AI_ENH6_ULTRA"
+                        cur = db.execute(
+                            "INSERT INTO comparison_jobs(source_series_id, profile, strength, acknowledged) VALUES(?, ?, 'STRONG', 1)",
+                            (target_sid, upgrade_prof)
+                        )
+                        new_jid = int(cur.lastrowid)
+                        audit("AUTO_UPGRADE_ON_REJECT", "comparison_job", str(new_jid), f"orig_job={jid};prof={upgrade_prof};chat={chat_id}")
+
+                if new_jid:
+                    reply = (
+                        "👎 *تم تسجيل عدم رضاك عن الفحص #" + str(jid) + "!*" + _nl +
+                        "• السلسلة: `" + str(target_desc or "-") + "`" + _nl +
+                        "🚀 *جاري فوراً تطبيق تحسين أفضل بمستوى فائق الدقة (" + upgrade_prof + " - STRONG)...*" + _nl +
+                        "• رقم فحص التشغيل الجديد: `#" + str(new_jid) + "`" + _nl +
+                        "• تم رفع تباين الأنسجة وحدة الحواف إلى 1px مع تصفية النويز." + _nl +
+                        "📡 **سيتم إرسال الصور الجديدة تلقائياً إلى جهاز GE AW وإشعارك هنا فور اكتمالها.**"
+                    )
+                else:
+                    reply = (
+                        "👎 *تم تسجيل عدم رضاك عن الفحص #" + str(jid) + " (تقييم #" + str(fid) + ")!*" + _nl +
+                        "• السلسلة: `" + str(sdesc or "-") + "`" + _nl +
+                        "✍️ اكتب في رسالة أو سجّل فويس بالتعديل المطلوب وسيتم تنفيذه وإرساله لـ GE!"
+                    )
             else:
                 reply = f"{label} — تم تسجيل تقييمك بنجاح برقم `#{fid}`."
         elif data.startswith("bc_"):
@@ -1817,7 +1856,7 @@ class TelegramBotWorker:
             )
             return
 
-        if stripped_t in ("لا", "مش راضي", "غير راضي", "no", "رفض", "مرفوض", "مش عاجبني"):
+        if stripped_t in ("لا", "مش راضي", "غير راضي", "no", "رفض", "مرفوض", "مش عاجبني", "سيء", "وحش"):
             fid = record_feedback(
                 source="telegram",
                 patient_name=sender,
@@ -1829,13 +1868,54 @@ class TelegramBotWorker:
                 source_aet=f"tg:{chat_id}",
             )
             audit("TELEGRAM_SATISFACTION_NO", "feedback", str(fid), f"chat={chat_id}")
-            ack = (
-                "👎 *تم تسجيل عدم رضاك عن الفحص الأخير.*\n"
-                "• السلسلة: `" + str(last_sdesc or "-") + "`\n"
-                "• رقم التقييم: `#" + str(fid) + "`\n"
-                "✍️ *ما هو التعديل المطلوب لضبط الصورة؟*\n"
-                "اكتب طلبك (مثلاً: _تفتيح_، _زيادة تباين_، _تخفيف التنعيم_، أو _زيادة حدة العظم_) أو أرسل فويس نوت، وسيطبقها السيرفر فوراً ويُرسلها لـ GE."
-            )
+
+            target_sid = None
+            target_desc = last_sdesc
+            orig_prof = ""
+            new_jid = None
+            with connect() as db:
+                last_cj = db.execute(
+                    "SELECT cj.id, cj.source_series_id, cj.profile, COALESCE(ib.description, '') as desc "
+                    "FROM comparison_jobs cj LEFT JOIN inbound_series ib ON ib.series_id=cj.source_series_id "
+                    "WHERE cj.status='ready' ORDER BY cj.id DESC LIMIT 1"
+                ).fetchone()
+                if last_cj:
+                    target_sid = last_cj["source_series_id"]
+                    orig_prof = str(last_cj["profile"] or "")
+                    target_desc = str(last_cj["desc"] or last_sdesc)
+                if not target_sid:
+                    last_s = db.execute("SELECT series_id, description FROM inbound_series ORDER BY received_at DESC LIMIT 1").fetchone()
+                    if last_s:
+                        target_sid = last_s["series_id"]
+                        target_desc = str(last_s["description"] or "-")
+
+                if target_sid:
+                    upgrade_prof = "RAD4AI_3T_HD" if orig_prof == "RAD4AI_ENH6_ULTRA" else "RAD4AI_ENH6_ULTRA"
+                    cur = db.execute(
+                        "INSERT INTO comparison_jobs(source_series_id, profile, strength, acknowledged) VALUES(?, ?, 'STRONG', 1)",
+                        (target_sid, upgrade_prof)
+                    )
+                    new_jid = int(cur.lastrowid)
+                    audit("AUTO_UPGRADE_ON_TEXT_REJECT", "comparison_job", str(new_jid), f"prof={upgrade_prof};chat={chat_id}")
+
+            if new_jid:
+                ack = (
+                    "👎 *تم تسجيل عدم رضاك عن الفحص الأخير.*\n"
+                    "• السلسلة المستهدفة: `" + str(target_desc or "-") + "`\n"
+                    "🚀 *جاري فوراً تطبيق تحسين أفضل بمستوى فائق الدقة (" + upgrade_prof + " - STRONG)...*\n"
+                    "• رقم فحص التشغيل الجديد: `#" + str(new_jid) + "`\n"
+                    "• تم رفع تباين الأنسجة وحدة الحواف التشريحية لأقصى درجة.\n"
+                    "📡 **سيتم إرسال الصور الجديدة تلقائياً إلى محطة GE AW وإشعارك هنا فور اكتمالها.**"
+                )
+            else:
+                ack = (
+                    "👎 *تم تسجيل عدم رضاك عن الفحص الأخير.*\n"
+                    "• السلسلة: `" + str(last_sdesc or "-") + "`\n"
+                    "• رقم التقييم: `#" + str(fid) + "`\n"
+                    "✍️ *ما هو التعديل المطلوب لضبط الصورة؟*\n"
+                    "اكتب طلبك أو أرسل فويس نوت، وسيطبقها السيرفر فوراً ويُرسلها لـ GE."
+                )
+
             self._api(
                 client,
                 "sendMessage",

@@ -1308,7 +1308,7 @@ class TelegramBotWorker:
                 target_sid = None
                 target_desc = sdesc
                 orig_prof = ""
-                new_jid = None
+                new_jids = []
                 with connect() as db:
                     if jid.isdigit():
                         j_row = db.execute(
@@ -1327,22 +1327,33 @@ class TelegramBotWorker:
                             target_desc = str(last_s["description"] or "-")
 
                     if target_sid:
-                        upgrade_prof = "RAD4AI_3T_HD" if orig_prof == "RAD4AI_ENH6_ULTRA" else "RAD4AI_ENH6_ULTRA"
-                        cur = db.execute(
-                            "INSERT INTO comparison_jobs(source_series_id, profile, strength, acknowledged) VALUES(?, ?, 'STRONG', 1)",
-                            (target_sid, upgrade_prof)
-                        )
-                        new_jid = int(cur.lastrowid)
-                        audit("AUTO_UPGRADE_ON_REJECT", "comparison_job", str(new_jid), f"orig_job={jid};prof={upgrade_prof};chat={chat_id}")
+                        base_prof = orig_prof if orig_prof in ("RAD4AI_SPINE_PRO", "RAD4AI_FAST_MRI", "RICIAN_NLM_VST") else "RAD4AI_SPINE_PRO"
+                        five_levels = [
+                            (base_prof, "MILD"),
+                            (base_prof, "MEDIUM"),
+                            (base_prof, "STRONG"),
+                            ("RAD4AI_PRINT_MASTER", "MEDIUM"),
+                            ("RAD4AI_3T_HD", "STRONG"),
+                        ]
+                        for p, lvl in five_levels:
+                            cur = db.execute(
+                                "INSERT INTO comparison_jobs(source_series_id, profile, strength, acknowledged) VALUES(?, ?, ?, 1)",
+                                (target_sid, p, lvl)
+                            )
+                            new_jids.append(int(cur.lastrowid))
+                        audit("AUTO_5LEVELS_ON_REJECT", "series", target_sid, f"jobs={new_jids};orig_job={jid};chat={chat_id}")
 
-                if new_jid:
+                if new_jids:
                     reply = (
                         "👎 *تم تسجيل عدم رضاك عن الفحص #" + str(jid) + "!*" + _nl +
-                        "• السلسلة: `" + str(target_desc or "-") + "`" + _nl +
-                        "🚀 *جاري فوراً تطبيق تحسين أفضل بمستوى فائق الدقة (" + upgrade_prof + " - STRONG)...*" + _nl +
-                        "• رقم فحص التشغيل الجديد: `#" + str(new_jid) + "`" + _nl +
-                        "• تم رفع تباين الأنسجة وحدة الحواف إلى 1px مع تصفية النويز." + _nl +
-                        "📡 **سيتم إرسال الصور الجديدة تلقائياً إلى جهاز GE AW وإشعارك هنا فور اكتمالها.**"
+                        "• السلسلة المستهدفة: `" + str(target_desc or "-") + "`" + _nl +
+                        "🚀 *جاري فوراً إعادة المعالجة وإرسال الـ 5 مستويات كاملة إلى جهاز GE:* " + _nl +
+                        "1️⃣ `L1-SOFT` (ناعم هادئ)" + _nl +
+                        "2️⃣ `L2-BALANCED` (متوازن)" + _nl +
+                        "3️⃣ `L3-CRISP` (حاد فائق التحديد)" + _nl +
+                        "4️⃣ `L4-PRINT` (أفلام طباعة بخلفية سوداء)" + _nl +
+                        "5️⃣ `L5-AI3T` (رنين 3T فائق الدقة)" + _nl + _nl +
+                        "📡 **سيتم إرسال كافة المستويات الـ 5 تباعاً إلى محطة GE Advantage Workstation لتختار الأنسب منها.**"
                     )
                 else:
                     reply = (
@@ -1872,7 +1883,7 @@ class TelegramBotWorker:
             target_sid = None
             target_desc = last_sdesc
             orig_prof = ""
-            new_jid = None
+            new_jids = []
             with connect() as db:
                 last_cj = db.execute(
                     "SELECT cj.id, cj.source_series_id, cj.profile, COALESCE(ib.description, '') as desc "
@@ -1890,22 +1901,33 @@ class TelegramBotWorker:
                         target_desc = str(last_s["description"] or "-")
 
                 if target_sid:
-                    upgrade_prof = "RAD4AI_3T_HD" if orig_prof == "RAD4AI_ENH6_ULTRA" else "RAD4AI_ENH6_ULTRA"
-                    cur = db.execute(
-                        "INSERT INTO comparison_jobs(source_series_id, profile, strength, acknowledged) VALUES(?, ?, 'STRONG', 1)",
-                        (target_sid, upgrade_prof)
-                    )
-                    new_jid = int(cur.lastrowid)
-                    audit("AUTO_UPGRADE_ON_TEXT_REJECT", "comparison_job", str(new_jid), f"prof={upgrade_prof};chat={chat_id}")
+                    base_prof = orig_prof if orig_prof in ("RAD4AI_SPINE_PRO", "RAD4AI_FAST_MRI", "RICIAN_NLM_VST") else "RAD4AI_SPINE_PRO"
+                    five_levels = [
+                        (base_prof, "MILD"),
+                        (base_prof, "MEDIUM"),
+                        (base_prof, "STRONG"),
+                        ("RAD4AI_PRINT_MASTER", "MEDIUM"),
+                        ("RAD4AI_3T_HD", "STRONG"),
+                    ]
+                    for p, lvl in five_levels:
+                        cur = db.execute(
+                            "INSERT INTO comparison_jobs(source_series_id, profile, strength, acknowledged) VALUES(?, ?, ?, 1)",
+                            (target_sid, p, lvl)
+                        )
+                        new_jids.append(int(cur.lastrowid))
+                    audit("AUTO_5LEVELS_ON_TEXT_REJECT", "series", target_sid, f"jobs={new_jids};chat={chat_id}")
 
-            if new_jid:
+            if new_jids:
                 ack = (
                     "👎 *تم تسجيل عدم رضاك عن الفحص الأخير.*\n"
                     "• السلسلة المستهدفة: `" + str(target_desc or "-") + "`\n"
-                    "🚀 *جاري فوراً تطبيق تحسين أفضل بمستوى فائق الدقة (" + upgrade_prof + " - STRONG)...*\n"
-                    "• رقم فحص التشغيل الجديد: `#" + str(new_jid) + "`\n"
-                    "• تم رفع تباين الأنسجة وحدة الحواف التشريحية لأقصى درجة.\n"
-                    "📡 **سيتم إرسال الصور الجديدة تلقائياً إلى محطة GE AW وإشعارك هنا فور اكتمالها.**"
+                    "🚀 *جاري فوراً إعادة المعالجة وإرسال الـ 5 مستويات كاملة إلى جهاز GE:*\n"
+                    "1️⃣ `L1-SOFT` (ناعم هادئ)\n"
+                    "2️⃣ `L2-BALANCED` (متوازن)\n"
+                    "3️⃣ `L3-CRISP` (حاد فائق التحديد)\n"
+                    "4️⃣ `L4-PRINT` (أفلام طباعة بخلفية سوداء)\n"
+                    "5️⃣ `L5-AI3T` (رنين 3T فائق الدقة)\n\n"
+                    "📡 **سيتم إرسال كافة المستويات الـ 5 تباعاً إلى محطة GE Advantage Workstation لتختار الأنسب منها.**"
                 )
             else:
                 ack = (

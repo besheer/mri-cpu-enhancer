@@ -154,16 +154,13 @@ class ComparisonWorker:
             processed, metrics = process_volume(volume, profile, strength, spacing, description=description)
             output_uid = generate_uid()
             level_map = {"MILD": "L1-SOFT", "MEDIUM": "L2-BALANCED", "STRONG": "L3-CRISP"}
-            if center and center["calibration_mode"]:
-                if profile == "RAD4AI_PRINT_MASTER":
-                    lvl_tag = "L4-PRINT"
-                elif profile == "RAD4AI_3T_HD":
-                    lvl_tag = "L5-AI3T"
-                else:
-                    lvl_tag = level_map.get(strength, strength)
-                desc_prefix = f"{lvl_tag}-{PREFIXES[profile]}"
+            if profile == "RAD4AI_PRINT_MASTER":
+                lvl_tag = "L4-PRINT"
+            elif profile in ("RAD4AI_3T_HD", "RAD4AI_ENH6_ULTRA"):
+                lvl_tag = "L5-AI3T"
             else:
-                desc_prefix = f"{PREFIXES[profile]}{strength}-"
+                lvl_tag = level_map.get(strength, strength)
+            desc_prefix = f"{lvl_tag}-{PREFIXES.get(profile, 'ENH-')}"
             output_description = derived_series_description(description, desc_prefix)
             output_series_id = ""
             for index, (dataset, pixels) in enumerate(zip(datasets, processed), start=1):

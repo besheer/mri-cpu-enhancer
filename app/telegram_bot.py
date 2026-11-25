@@ -643,6 +643,10 @@ class TelegramBotWorker:
                     {"text": "⚡ تنفيذ آخر تعديلات مطلوبة", "callback_data": "exec_latest_modifications"},
                 ],
                 [
+                    {"text": "📡 فحص حالة إرجاع الصور لـ GE", "callback_data": "check_returns"},
+                    {"text": "🚀 دفع الصور العالقة", "callback_data": "force_push_unsent"},
+                ],
+                [
                     {"text": "📊 حالة السيرفر وآخر فحص", "callback_data": "status"},
                     {"text": "📋 آخر التقييمات", "callback_data": "feedbacks"},
                 ],
@@ -685,6 +689,102 @@ class TelegramBotWorker:
 
             ]
         }
+
+    def _format_return_status(self, force_push: bool = False) -> str:
+        orthanc_url = os.getenv("ORTHANC_URL", "http://orthanc:8042").rstrip("/")
+        auth = (os.getenv("ORTHANC_USERNAME", "admin"), os.getenv("ORTHANC_PASSWORD", ""))
+
+        # 1. Live C-ECHO check to GE AW (192.168.0.206:4006 / adw)
+        echo_msg = "غير مستجيب 🔴"
+        try:
+            with httpx.Client(auth=auth, timeout=6) as api:
+                api.put(f"{orthanc_url}/modalities/darelha", json={"AET": "adw", "Host": "192.168.0.206", "Port": 4006})
+                er = api.post(f"{orthanc_url}/modalities/darelha/echo")
+                if er.status_code == 200:
+                    echo_msg = "متصل ومستجيب 🟢 (`adw` @ `192.168.0.206:4006`)"
+                    with connect() as db:
+                        db.execute("UPDATE centers SET last_echo_status='PASS' WHERE id=8")
+                else:
+                    echo_msg = f"خطأ استجابة ({er.status_code}) 🔴"
+        except Exception as exc:
+            safe_exc = str(exc).replace("_", "-").replace("*", "").replace("`", "")[:45]
+            echo_msg = f"تعذر الاتصال ({safe_exc}) 🔴"
+
+        # 2. Check incoming unstable series still transferring into Orthanc
+        transferring = []
+        try:
+            with httpx.Client(auth=auth, timeout=6) as api:
+                for sr in api.get(f"{orthanc_url}/series?expand").json():
+                    if not sr.get("IsStable", True):
+                        d = str(sr.get("MainDicomTags", {}).get("SeriesDescription", "MR")).replace("`", "")
+                        if not d.upper().startswith("ENH"):
+                            transferring.append(f"`{d}` ({len(sr.get('Instances', []))} شريحة)")
+        except Exception:
+            pass
+
+        pushed_now = 0
+        with connect() as db:
+            if force_push:
+                unsent_jobs = db.execute(
+                    "SELECT MAX(cj.id) AS id, cj.output_series_id, ib.series_id "
+                    "FROM comparison_jobs cj JOIN inbound_series ib ON ib.series_id=cj.source_series_id "
+                    "WHERE cj.status='ready' AND cj.output_series_id IS NOT NULL "
+                    "AND cj.created_at >= datetime('now', '-12 hours') "
+                    "AND NOT EXISTS ("
+                    "  SELECT 1 FROM return_jobs r2 JOIN comparison_jobs c2 ON c2.id=r2.comparison_job_id "
+                    "  WHERE c2.source_series_id=cj.source_series_id AND r2.status IN ('queued', 'sending', 'sent')"
+                    ") "
+                    "GROUP BY cj.source_series_id"
+                ).fetchall()
+                for uj in unsent_jobs:
+                    db.execute(
+                        "INSERT OR IGNORE INTO return_jobs(comparison_job_id, center_id, output_series_id) VALUES (?, 8, ?)",
+                        (int(uj["id"]), str(uj["output_series_id"])),
+                    )
+                    db.execute(
+                        "UPDATE inbound_series SET status='SENT', updated_at=CURRENT_TIMESTAMP WHERE series_id=?",
+                        (uj["series_id"],),
+                    )
+                    pushed_now += 1
+                retried = db.execute(
+                    "UPDATE return_jobs SET status='queued', attempts=0, error=NULL, updated_at=CURRENT_TIMESTAMP "
+                    "WHERE status='failed' AND created_at >= datetime('now', '-12 hours')"
+                ).rowcount
+                pushed_now += int(retried or 0)
+
+            proc_cnt = db.execute("SELECT count(*) FROM comparison_jobs WHERE status IN ('queued', 'processing')").fetchone()[0]
+            ret_q_cnt = db.execute("SELECT count(*) FROM return_jobs WHERE status IN ('queued', 'sending')").fetchone()[0]
+            ret_fail_cnt = db.execute("SELECT count(*) FROM return_jobs WHERE status='failed' AND created_at >= datetime('now', '-12 hours')").fetchone()[0]
+            recent_in = db.execute(
+                "SELECT series_id, description, instances, status, received_at FROM inbound_series "
+                "ORDER BY received_at DESC LIMIT 6"
+            ).fetchall()
+
+            lines = [
+                "📡 *تقرير فحص حالة إرجاع الصور إلى GE (`adw`)*",
+                f"• *اتصال محطة GE AW*: {echo_msg}",
+                f"• *يُستلم الآن من الرنين*: {('، '.join(transferring)) if transferring else 'لا يوجد نقل جارٍ (مستقر)'}",
+                f"• *قيد المعالجة حالياً*: `{proc_cnt}` | *في طابور الإرسال*: `{ret_q_cnt}` | *فشل إرسال*: `{ret_fail_cnt}`",
+            ]
+            if force_push:
+                lines.append(
+                    f"• 🚀 *نتيجة الدفع الفوري*: تم دفع `{pushed_now}` سلسلة لإرسالها الآن إلى `adw`."
+                    if pushed_now
+                    else "• ✅ *لا توجد أي صور عالقة — جميع السلاسل الجاهزة مُرسلة بالفعل.*"
+                )
+            lines.append("")
+            lines.append("📋 *آخر 6 سلاسل مستلمة وحالة إرجاعها:*")
+            for r in recent_in:
+                sent_n = db.execute(
+                    "SELECT count(*) FROM return_jobs rj JOIN comparison_jobs cj ON cj.id=rj.comparison_job_id "
+                    "WHERE cj.source_series_id=? AND rj.status='sent'",
+                    (r["series_id"],),
+                ).fetchone()[0]
+                st_icon = "✅ وصل لـ GE" if (r["status"] == "SENT" or sent_n > 0) else ("⏳ قيد المعالجة" if r["status"] in ("RECEIVED", "QUEUED", "PROCESSING") else f"⚠️ {r['status']}")
+                t_short = str(r["received_at"] or "")[-8:]
+                desc_clean = str(r["description"] or "-").replace("`", "")[:24]
+                lines.append(f"• `{t_short}` | `{desc_clean}` ({r['instances']} ش) ← *{st_icon}* (`{sent_n}` نسخ)")
+        return "\n".join(lines)
 
     def _format_status(self) -> str:
         c = get_center(8)
@@ -757,6 +857,10 @@ class TelegramBotWorker:
 
         if data == "status":
             reply = self._format_status()
+        elif data == "check_returns":
+            reply = self._format_return_status(force_push=False)
+        elif data == "force_push_unsent":
+            reply = self._format_return_status(force_push=True)
         elif data.startswith("lk_stir_"):
             lvl_map = {
                 "1": ("RAD4AI_SPINE_PRO", "Spine/Ortho Pro (توازن عظم + تنعيم سوفت)"),

@@ -17,6 +17,7 @@ def connect() -> sqlite3.Connection:
 
 def initialize() -> None:
     with connect() as db:
+        db.execute("PRAGMA journal_mode=WAL")
         db.executescript(
             """
             CREATE TABLE IF NOT EXISTS centers (

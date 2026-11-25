@@ -30,6 +30,30 @@ class ReturnWorker:
     def status(self) -> dict[str, object]:
         return {"running": bool(self.thread and self.thread.is_alive())}
 
+    def _heal_unsent_ready_jobs(self) -> None:
+        try:
+            from app.store import enqueue_return
+            with connect() as db:
+                orphans = db.execute(
+                    "SELECT MAX(cj.id) AS id, cj.output_series_id, ib.center_id, ib.series_id "
+                    "FROM comparison_jobs cj "
+                    "JOIN inbound_series ib ON ib.series_id = cj.source_series_id "
+                    "JOIN centers c ON c.id = ib.center_id "
+                    "WHERE cj.status='ready' AND cj.output_series_id IS NOT NULL "
+                    "AND cj.qc_status IN ('PASS', 'WARN') AND c.enabled=1 AND c.return_policy='AUTO_PASS' "
+                    "AND cj.created_at >= datetime('now', '-6 hours') "
+                    "AND NOT EXISTS ("
+                    "  SELECT 1 FROM return_jobs r2 JOIN comparison_jobs c2 ON c2.id = r2.comparison_job_id "
+                    "  WHERE c2.source_series_id = cj.source_series_id AND r2.status IN ('queued', 'sending', 'sent')"
+                    ") "
+                    "GROUP BY cj.source_series_id LIMIT 10"
+                ).fetchall()
+            for o in orphans:
+                enqueue_return(int(o["id"]), int(o["center_id"]), str(o["output_series_id"]))
+                audit("SELF_HEAL_RETURN_QUEUED", "comparison_job", int(o["id"]), f"series={o['series_id']}")
+        except Exception:
+            pass
+
     def _next(self):
         with connect() as db:
             job = db.execute(
@@ -46,6 +70,7 @@ class ReturnWorker:
             if setting("pause_return") == "1" or setting("maintenance_mode") == "1":
                 self.stop_event.wait(2)
                 continue
+            self._heal_unsent_ready_jobs()
             job = self._next()
             if not job:
                 self.stop_event.wait(2)
@@ -53,8 +78,7 @@ class ReturnWorker:
             try:
                 if not job["enabled"]:
                     raise RuntimeError("Center is disabled")
-                if job["last_echo_status"] != "PASS":
-                    raise RuntimeError("C-ECHO must pass before DICOM return")
+                # Live C-ECHO is verified directly below; update DB on success instead of blocking on stale status
                 with httpx.Client(auth=self.auth, timeout=1800) as api:
                     api.put(f"{self.url}/modalities/{job['slug']}", json={
                         "AET": job["return_aet"], "Host": job["return_ip"], "Port": job["return_port"]

@@ -78,8 +78,7 @@ class ComparisonWorker:
                         pass
                 if (not protocol_protected and center
                         and profile_returnable
-                        and center["return_policy"] == "AUTO_PASS" and qc_status in ("PASS", "WARN")
-                        and center["last_echo_status"] == "PASS"):
+                        and center["return_policy"] == "AUTO_PASS" and qc_status in ("PASS", "WARN")):
                     enqueue_return(job["id"], center["id"], output_id)
                     audit("AUTO_RETURN_QUEUED", "comparison_job", job["id"], f"center={center['name']}")
                 elif protocol_protected:

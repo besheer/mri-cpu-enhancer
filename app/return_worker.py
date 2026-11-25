@@ -32,25 +32,23 @@ class ReturnWorker:
 
     def _heal_unsent_ready_jobs(self) -> None:
         try:
-            from app.store import enqueue_return
+            from app.store import enqueue_return, get_center
             with connect() as db:
                 orphans = db.execute(
-                    "SELECT MAX(cj.id) AS id, cj.output_series_id, ib.center_id, ib.series_id "
+                    "SELECT cj.id, cj.output_series_id, COALESCE(ib.center_id, 8) AS center_id, cj.source_series_id "
                     "FROM comparison_jobs cj "
-                    "JOIN inbound_series ib ON ib.series_id = cj.source_series_id "
-                    "JOIN centers c ON c.id = ib.center_id "
+                    "LEFT JOIN inbound_series ib ON ib.series_id = cj.source_series_id "
+                    "LEFT JOIN return_jobs rj ON rj.comparison_job_id = cj.id "
                     "WHERE cj.status='ready' AND cj.output_series_id IS NOT NULL "
-                    "AND cj.qc_status IN ('PASS', 'WARN') AND c.enabled=1 AND c.return_policy='AUTO_PASS' "
-                    "AND cj.created_at >= datetime('now', '-6 hours') "
-                    "AND NOT EXISTS ("
-                    "  SELECT 1 FROM return_jobs r2 JOIN comparison_jobs c2 ON c2.id = r2.comparison_job_id "
-                    "  WHERE c2.source_series_id = cj.source_series_id AND r2.status IN ('queued', 'sending', 'sent')"
-                    ") "
-                    "GROUP BY cj.source_series_id LIMIT 10"
+                    "AND cj.qc_status IN ('PASS', 'WARN') "
+                    "AND rj.id IS NULL "
+                    "AND cj.created_at >= datetime('now', '-24 hours') "
+                    "ORDER BY cj.id ASC LIMIT 20"
                 ).fetchall()
             for o in orphans:
-                enqueue_return(int(o["id"]), int(o["center_id"]), str(o["output_series_id"]))
-                audit("SELF_HEAL_RETURN_QUEUED", "comparison_job", int(o["id"]), f"series={o['series_id']}")
+                cid = int(o["center_id"] or 8)
+                enqueue_return(int(o["id"]), cid, str(o["output_series_id"]))
+                audit("SELF_HEAL_RETURN_QUEUED", "comparison_job", int(o["id"]), f"series={o['source_series_id']};center={cid}")
         except Exception:
             pass
 

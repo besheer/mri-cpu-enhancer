@@ -16,7 +16,7 @@ from pydicom.uid import generate_uid
 from app.enhancer import derive_with_pixels, derived_series_description, is_derived_series
 from app.profiles import PREFIXES, PROFILE_INFO, PROFILES, process_volume, validate_selection
 from app.quality import evaluate_quality
-from app.store import audit, auto_eligible_profile_names, connect, enabled_profile_names, enqueue_return, get_center_by_aet, setting
+from app.store import audit, auto_eligible_profile_names, connect, enabled_profile_names, enqueue_return, get_center, get_center_by_aet, setting
 
 log = logging.getLogger("comparison-worker")
 
@@ -84,9 +84,12 @@ class ComparisonWorker:
                         send_bilingual_report_async(job["id"])
                     except Exception:
                         pass
+                if not center:
+                    center = get_center(8)
                 if (not protocol_protected and center
                         and profile_returnable
-                        and center["return_policy"] == "AUTO_PASS" and qc_status in ("PASS", "WARN")):
+                        and center["return_policy"] in ("AUTO_PASS", "AUTO_ALWAYS")
+                        and qc_status in ("PASS", "WARN")):
                     enqueue_return(job["id"], center["id"], output_id)
                     audit("AUTO_RETURN_QUEUED", "comparison_job", job["id"], f"center={center['name']}")
                 elif protocol_protected:
@@ -114,8 +117,15 @@ class ComparisonWorker:
             instance_ids = info.json().get("Instances", [])
             if instance_ids:
                 origin = api.get(f"{self.url}/instances/{instance_ids[0]}/metadata/1024")
-                if origin.status_code == 200:
+                if origin.status_code == 200 and origin.text.strip():
                     center = get_center_by_aet(origin.text.strip())
+            if not center:
+                with connect() as db:
+                    row = db.execute("SELECT center_id FROM inbound_series WHERE series_id=? LIMIT 1", (series_id,)).fetchone()
+                    if row and row["center_id"]:
+                        center = get_center(int(row["center_id"]))
+            if not center:
+                center = get_center(8)
             validate_selection(profile, description, len(info.json().get("Instances", [])),
                                acknowledged=(bool(PROFILE_INFO.get(profile, {}).get("research_only")) or bool(acknowledged)),
                                strength=strength)

@@ -91,7 +91,9 @@
    * **Self-Healing Sweep**: `_heal_unsent_ready_jobs()` runs every 2 seconds in `return_worker` to automatically pick up and deliver any unsent ready scans.
    * **SQLite Concurrency**: Database runs in `WAL` mode (`PRAGMA journal_mode=WAL`) to allow concurrent multi-worker reads/writes without `database is locked` errors.
 
-4. **Telegram Diagnostic Suite (`@radainewbot`)**:
+4. **Telegram Diagnostic Suite & Quality Polling (`@radainewbot`)**:
+   * **Per-Scan Satisfaction Poll**: Each enhanced series notification on Telegram now asks: `❓ هل أنت راضٍ عن جودة هذا الفحص؟` with prominent buttons `[ 👍 نعم (راضٍ تماماً) ]` and `[ 👎 لا (غير راضٍ) ]`.
+   * **Instant Tech Feedback Action**: Answering "نعم" records instant approval. Answering "لا" prompts the technician to specify adjustments (text or voice) or use quick adjustment buttons (`يحتاج خشونة`, `يحتاج تنعيم`, `ENH-6`).
    * `/delay` (or "فحص التأخير"): Real-time CPU, RAM, per-slice AI speed, queue depth, and stage-by-stage latency breakdown.
    * `/returns` (or "فحص الإرجاع"): Live `adw:4006` C-ECHO check and status of last 6 received series.
    * `/push` (or "دفع الصور"): 1-click force push of any unsent or stuck scans from the last 12 hours.

@@ -93,7 +93,7 @@
 
 4. **Telegram Diagnostic Suite & Quality Polling (`@radainewbot`)**:
    * **Per-Scan Satisfaction Poll**: Each enhanced series notification on Telegram now asks: `❓ هل أنت راضٍ عن جودة هذا الفحص؟` with prominent buttons `[ 👍 نعم (راضٍ تماماً) ]` and `[ 👎 لا (غير راضٍ) ]`.
-   * **Instant Tech Feedback Action**: Answering "نعم" records instant approval. Answering "لا" (or "غير راضٍ") **automatically and immediately triggers a superior AI upgrade** (`RAD4AI_ENH6_ULTRA` with `STRONG` intensity, sub-pixel 1px edge shock compression and maximal anatomical contrast) on the same scan and automatically returns it to GE AW (`adw:4006`) without requiring manual technician commands. Quick adjustment buttons (`يحتاج خشونة`, `يحتاج تنعيم`, `ENH-6`) remain accessible.
+   * **Instant Tech Feedback Action**: Answering "نعم" records instant approval. Answering "لا" (or "غير راضٍ") **automatically and immediately generates and returns all 5 distinct calibration levels** (`L1-SOFT`, `L2-BALANCED`, `L3-CRISP`, `L4-PRINT`, `L5-AI3T`) to GE AW (`adw:4006`) without requiring manual technician commands, enabling the technician to inspect and select their preferred image style directly on the workstation. Quick adjustment buttons (`يحتاج خشونة`, `يحتاج تنعيم`, `ENH-6`) remain accessible.
    * `/delay` (or "فحص التأخير"): Real-time CPU, RAM, per-slice AI speed, queue depth, and stage-by-stage latency breakdown.
    * `/returns` (or "فحص الإرجاع"): Live `adw:4006` C-ECHO check and status of last 6 received series.
    * `/push` (or "دفع الصور"): 1-click force push of any unsent or stuck scans from the last 12 hours.

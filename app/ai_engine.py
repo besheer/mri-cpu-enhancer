@@ -276,6 +276,239 @@ class MRIAIEngine:
 
         return np.stack(results, axis=0)
 
+    def _enhance_axial(self, volume: np.ndarray, strength: float = 1.0, mode: str = "spine_pro",
+                       seq_type: str = "T2_FSE") -> np.ndarray:
+        """True 1.5T/3T-Grade Clinical Axial MRI Engine v3 (Spine, Knee/Ortho, Neuro):
+        - Tissue-selective dual-scale Rician NLM: silky smooth subcutaneous/retroperitoneal fat & CSF,
+          while preserving real trabecular bone marrow architecture & white intramuscular fascial striations.
+        - Adaptive p99 foreground tissue normalization + highlight-safe CSF shoulder so Axial Spine & Knee
+          open bright, high-contrast, and punchy on GE AW native Window/Level (never dark/muddy gray).
+        - Zero 256x256 stair-stepping; smooth 1024x1024 anti-ringing upscale + 1024px cortical/nerve-root
+          acutance + authentic 1.5T 1px cancellous bone micro-grain.
+        """
+        from scipy.ndimage import zoom as _zoom
+
+        vol_f = volume.astype(np.float32)
+        num_slices = vol_f.shape[0]
+
+        if mode == "fast_mri":
+            fat_denoise = 0.92
+            bone_denoise = 0.68
+            scurve_mix = 0.30
+            hi_crisp = 0.85
+            bone_tex_256 = 0.16
+            bone_grain_1k = 0.0080
+        elif mode == "enh6_ultra":
+            fat_denoise = 0.90
+            bone_denoise = 0.58
+            scurve_mix = 0.40
+            hi_crisp = 1.18
+            bone_tex_256 = 0.24
+            bone_grain_1k = 0.0150
+        elif mode == "3t_hd":
+            fat_denoise = 0.86
+            bone_denoise = 0.52
+            scurve_mix = 0.36
+            hi_crisp = 1.12
+            bone_tex_256 = 0.30
+            bone_grain_1k = 0.0195
+        elif mode == "print_master":
+            fat_denoise = 0.90
+            bone_denoise = 0.62
+            scurve_mix = 0.42
+            hi_crisp = 1.00
+            bone_tex_256 = 0.20
+            bone_grain_1k = 0.0110
+        else:  # spine_pro / standard / ge_aw
+            fat_denoise = 0.88
+            bone_denoise = 0.56
+            scurve_mix = 0.35
+            hi_crisp = 1.06
+            bone_tex_256 = 0.28
+            bone_grain_1k = 0.0170
+
+        v_pos = vol_f[vol_f > 0]
+        vol_p99 = float(np.percentile(v_pos, 99.0)) if v_pos.size > 100 else float(np.max(vol_f))
+        vol_p999 = float(np.percentile(v_pos, 99.9)) if v_pos.size > 100 else float(np.max(vol_f))
+
+        results = []
+        for i in range(num_slices):
+            slice_2d = volume[i]
+            s_raw = np.maximum(vol_f[i], 0.0)
+            h_s, w_s = s_raw.shape
+
+            s_pos = s_raw[s_raw > 0]
+            s_p99 = float(np.percentile(s_pos, 99.0)) if s_pos.size > 64 else vol_p99
+            s_p999 = float(np.percentile(s_pos, 99.9)) if s_pos.size > 64 else vol_p999
+            # Tissue scale anchored at p99.2 so 99% of anatomy (fat/marrow/muscle) fills dynamic range cleanly,
+            # while super-bright CSF (>s_scale) is preserved via soft shoulder up to s_peak!
+            s_scale = max(0.60 * vol_p99 + 0.40 * s_p99, 1.0)
+            s_peak = max(0.60 * vol_p999 + 0.40 * s_p999, s_scale * 1.05)
+
+            # Soft-shoulder normalization: maps [0..s_scale] -> [0..0.88] and [s_scale..s_peak] -> [0.88..1.0]
+            base_n = np.clip(s_raw / s_scale, 0.0, 1.0) * 0.88
+            hi_excess = np.clip((s_raw - s_scale) / max(s_peak - s_scale, 1.0), 0.0, 1.5)
+            norm01 = np.clip(base_n + 0.12 * (hi_excess / (1.0 + 0.5 * hi_excess)), 0.0, 1.0).astype(np.float32)
+
+            # 1. Smooth per-border Rician air-floor debiasing (zero 256px stair-stepping!)
+            bh = max(4, h_s // 24)
+            bw = max(4, w_s // 24)
+            strips = [norm01[:bh, :].ravel(), norm01[-bh:, :].ravel(), norm01[:, :bw].ravel(), norm01[:, -bw:].ravel()]
+            strip_p75 = [float(np.percentile(st, 75.0)) for st in strips if st.size > 0]
+            air_floor = float(np.clip(min(strip_p75) if strip_p75 else 0.018, 0.005, 0.060))
+            k_sigma = self._estimate_kspace_sigma(norm01)
+
+            debias = np.sqrt(np.maximum(norm01 * norm01 - (1.25 * air_floor) ** 2, 0.0))
+            air_gate = np.clip((2.0 * air_floor - norm01) / max(1.5 * air_floor, 1e-4), 0.0, 1.0) ** 1.5
+            work = norm01 * (1.0 - 0.82 * air_gate) + debias * (0.82 * air_gate)
+
+            # 2. Gentle macro illumination balance (lifts shaded Axial flanks without flattening muscle vs fat!)
+            fg = np.clip(gaussian_filter((work > max(air_floor * 1.85, 0.042)).astype(np.float32), sigma=1.4), 0.0, 1.0)
+            if float(np.sum(fg > 0.5)) > 250:
+                sig_macro = max(38.0, min(h_s, w_s) / 3.6)
+                num_il = gaussian_filter(work * fg, sigma=sig_macro)
+                den_il = np.maximum(gaussian_filter(fg, sigma=sig_macro), 0.10)
+                illum = num_il / den_il
+                ref_il = max(float(np.percentile(illum[fg > 0.5], 68.0)), 0.08)
+                c_gain = np.clip(ref_il / np.maximum(illum, ref_il * 0.48), 0.90, 1.25)
+                hi_guard = np.where(c_gain > 1.0, np.clip((0.90 - work) / 0.30, 0.15, 1.0), 0.40)
+                work = np.clip(work * (1.0 + fg * 0.65 * hi_guard * (c_gain - 1.0)), 0.0, 1.0).astype(np.float32)
+
+            # 3. Tissue-Selective Dual-Scale Rician NLM:
+            #    - Fine 3x3 NLM preserves real trabecular marrow & muscle fascicles
+            #    - Coarse half-scale NLM dissolves 3px k-space blotches ONLY in homogeneous fat & dark haze!
+            vst_w = rician_forward_vst(work, k_sigma * 0.55, debias_factor=0.55)
+            w_in = (0.65 * work + 0.35 * vst_w).astype(np.float32)
+
+            nlm_fine = non_local_means(
+                w_in,
+                sigma=max(k_sigma, 0.018),
+                patch_radius=1,
+                search_radius=2,
+                h_factor=0.80 + 0.18 * strength,
+                guide=gaussian_filter(w_in, sigma=0.60),
+            ).astype(np.float32)
+
+            w_half = _zoom(nlm_fine, 0.5, order=1)
+            nlm_half = non_local_means(
+                w_half,
+                sigma=max(k_sigma * 0.85, 0.018),
+                patch_radius=1,
+                search_radius=3,
+                h_factor=0.92 + 0.20 * strength,
+                guide=gaussian_filter(w_half, sigma=0.65),
+            ).astype(np.float32)
+            nlm_coarse = _zoom(nlm_half, (h_s / w_half.shape[0], w_s / w_half.shape[1]), order=1).astype(np.float32)
+
+            # 4. Structure-Tensor Anisotropy & Tissue Zone Routing
+            g07 = gaussian_filter(work, sigma=0.72)
+            g20 = gaussian_filter(work, sigma=2.00)
+            gy, gx = np.gradient(g07)
+            jxx = gaussian_filter(gx * gx, sigma=1.8)
+            jyy = gaussian_filter(gy * gy, sigma=1.8)
+            jxy = gaussian_filter(gx * gy, sigma=1.8)
+            trace = jxx + jyy
+            aniso = np.hypot(jxx - jyy, 2.0 * jxy) / (trace + 1e-5)
+
+            fg_tr = trace[fg > 0.5] if np.any(fg > 0.5) else trace.ravel()
+            p78_tr = max(float(np.percentile(fg_tr, 78.0)), 1e-5)
+            macro_g = np.hypot(*np.gradient(g20))
+            fg_mg = macro_g[fg > 0.5] if np.any(fg > 0.5) else macro_g.ravel()
+            p80_mg = max(float(np.percentile(fg_mg, 80.0)), 1e-4)
+
+            macro_edge = np.clip(macro_g / (p80_mg * 1.02), 0.0, 1.0)
+            aniso_line = np.clip((trace / p78_tr) * ((np.clip((aniso - 0.24) / 0.50, 0.0, 1.0)) ** 1.15), 0.0, 1.0)
+            # White intramuscular fascial striations inside dark muscle (psoas / paraspinal / calf)
+            muscle_zone = np.clip((g20 - 0.05) / 0.05, 0.0, 1.0) * np.clip((0.34 - g20) / 0.10, 0.0, 1.0)
+            fascia_line = np.clip((work - g20) / max(1.05 * k_sigma, 0.015), 0.0, 1.0) * muscle_zone * np.clip(aniso / 0.35, 0.3, 1.0)
+            # Dark cauda equina nerve roots & meniscal clefts
+            nerve_root = np.clip((g20 - 0.38) / 0.16, 0.0, 1.0) * np.clip((g20 - g07 - 0.009) / 0.040, 0.0, 1.0)
+
+            struct_gate = np.clip(np.maximum.reduce([macro_edge, aniso_line, fascia_line, nerve_root]), 0.0, 1.0)
+
+            # Marrow zone (0.20..0.56): keep fine trabecular structure (light 3x3 NLM + real trabecular detail, ZERO coarse blur!)
+            marrow_zone = np.clip((g20 - 0.18) / 0.09, 0.0, 1.0) * np.clip((0.58 - g20) / 0.11, 0.0, 1.0) * fg
+            # Fat & fluid zone (>0.56) or sub-muscle shadow (<0.09): dissolve 3px k-space mottling into silky smooth cream!
+            fat_or_haze = np.clip((g20 - 0.54) / 0.12, 0.0, 1.0) + np.clip((0.10 - g20) / 0.05, 0.0, 1.0)
+            fat_or_haze = np.clip(fat_or_haze, 0.0, 1.0)
+
+            nlm_mixed = (1.0 - 0.62 * fat_or_haze) * nlm_fine + (0.62 * fat_or_haze) * nlm_coarse
+            zone_denoise = marrow_zone * bone_denoise + (1.0 - marrow_zone) * fat_denoise
+            eff_alpha = zone_denoise * ((1.0 - 0.85 * struct_gate) ** 1.3)
+            clean256 = (1.0 - eff_alpha) * work + eff_alpha * nlm_mixed
+
+            # Preserve gentle band-limited trabecular bone texture (sigma 0.55..1.8 so it's crisp trabeculae, not blocky pixels)
+            trab_band = gaussian_filter(work, sigma=0.48) - gaussian_filter(work, sigma=1.65)
+            trab_cap = max(1.35 * k_sigma, 0.028)
+            clean256 = np.clip(clean256 + bone_tex_256 * marrow_zone * np.clip(trab_band, -trab_cap, trab_cap), 0.0, 1.0)
+
+            # 5. Crisp 1.5T/3T Axial Contrast Curve (Deep charcoal psoas/cortex + bright creamy fat + brilliant CSF!)
+            lifted = np.power(np.clip(clean256, 0.0, 1.0), 0.92)
+            k_ax, x0_ax = (3.25, 0.34) if seq_type in ("T2_FSE", "T2_STAR_GRE") else (2.95, 0.35)
+            sc_raw = 1.0 / (1.0 + np.exp(-k_ax * (lifted - x0_ax)))
+            sc_0 = 1.0 / (1.0 + np.exp(-k_ax * (0.0 - x0_ax)))
+            sc_1 = 1.0 / (1.0 + np.exp(-k_ax * (1.0 - x0_ax)))
+            sc_norm = np.clip((sc_raw - sc_0) / (sc_1 - sc_0), 0.0, 1.0)
+            toned = (1.0 - scurve_mix) * lifted + scurve_mix * sc_norm
+
+            if seq_type in ("T2_FSE", "T2_STAR_GRE"):
+                fluid_mask = np.clip((toned - 0.62) / 0.25, 0.0, 1.0) ** 1.2
+                toned = np.clip(toned + 0.14 * fluid_mask * (1.0 - toned), 0.0, 1.0)
+                toned = np.clip(toned * (1.0 - 0.15 * nerve_root), 0.0, 1.0)
+
+            # Feathered air gate (smooth outer skin contour, pure black air)
+            bg_soft = gaussian_filter(np.clip((1.35 * air_floor - norm01) / max(1.35 * air_floor, 1e-4), 0.0, 1.0), sigma=0.80)
+            toned = toned * (1.0 - 0.92 * (bg_soft ** 1.35))
+
+            try:
+                from app.store import setting as _get_setting
+                _br = float(np.clip(float(_get_setting("clinic_brightness", "1.0") or 1.0), 0.75, 1.25))
+                _ct = float(np.clip(float(_get_setting("clinic_contrast", "1.0") or 1.0), 0.75, 1.35))
+            except Exception:
+                _br, _ct = 1.0, 1.0
+            if abs(_br - 1.0) > 1e-3 or abs(_ct - 1.0) > 1e-3:
+                toned = np.clip((toned - 0.5) * _ct + 0.5 + (_br - 1.0) * 0.5, 0.0, 1.0)
+
+            # Map [0..0.88] -> [0..s_scale] and [0.88..1.0] -> [s_scale..s_peak] so GE AW Window/Level opens bright & crisp!
+            low_part = np.minimum(toned / 0.88, 1.0) * s_scale
+            hi_part = np.clip((toned - 0.88) / 0.12, 0.0, 1.0) * max(s_peak - s_scale, 0.0)
+            restored256 = np.maximum(low_part + hi_part * fg, 0.0)
+
+            # 6. Smooth Anti-Ringing 1024x1024 Upscale + High-Res Cortical/Root Acutance + 1.5T Trabecular Micro-Grain
+            if 200 <= h_s <= 512 and 200 <= w_s <= 512:
+                scale_factor = 4.0 if (h_s <= 256 and w_s <= 256) else 2.0
+                up_cub = _zoom(restored256, scale_factor, order=3)
+                up_lin = _zoom(restored256, scale_factor, order=1)
+                lo_c = np.minimum(up_lin, up_cub) * 0.982
+                hi_c = np.maximum(up_lin, up_cub) * 1.018
+                restored = np.maximum(np.clip(up_cub, lo_c, hi_c), 0.0)
+
+                up_sg = np.clip(_zoom(struct_gate, scale_factor, order=1), 0.0, 1.0)
+                up_marrow = np.clip(_zoom(marrow_zone, scale_factor, order=1), 0.0, 1.0)
+                det_1k = restored - gaussian_filter(restored, sigma=1.25)
+                neg_lim = s_scale * 0.048
+                pos_lim = s_scale * 0.025
+                det_clamped = np.where(det_1k < 0, np.clip(det_1k, -neg_lim, 0.0), np.clip(det_1k, 0.0, pos_lim))
+                restored = np.maximum(restored + hi_crisp * det_clamped * (0.20 + 0.80 * np.maximum(up_sg, 0.45 * up_marrow)), 0.0)
+
+                if bone_grain_1k > 0:
+                    up_musc = np.clip(_zoom(muscle_zone * fg, scale_factor, order=1), 0.0, 1.0)
+                    tex_w = np.clip(up_marrow + 0.32 * up_musc, 0.0, 1.0)
+                    seed = (int(abs(float(np.sum(s_raw)))) * 2654435761 + i * 97531) & 0xFFFFFFFF
+                    rng = np.random.default_rng(seed)
+                    fine_1px = gaussian_filter(rng.standard_normal(restored.shape, dtype=np.float32), sigma=0.48) * 1.65
+                    restored = np.maximum(restored + tex_w * (bone_grain_1k * s_scale) * fine_1px, 0.0)
+            else:
+                restored = restored256
+
+            if np.issubdtype(slice_2d.dtype, np.integer):
+                info = np.iinfo(slice_2d.dtype)
+                results.append(np.rint(np.clip(restored, 0, info.max)).astype(slice_2d.dtype))
+            else:
+                results.append(restored.astype(slice_2d.dtype))
+
+        return np.stack(results, axis=0)
+
     def enhance_volume(self, volume: np.ndarray, strength: float = 0.8, mode: str = "standard",
                        description: str = "") -> np.ndarray:
         seq_type = self.detect_sequence_type(description)
@@ -285,12 +518,7 @@ class MRIAIEngine:
         is_axial = any(k in u_desc_init for k in ("AX", "OAX", "TRANS"))
 
         # Calibrated clinical strength mapping (0.5=MILD, 0.8=MEDIUM, 1.0=STRONG)
-        if mode == "enh6_ultra":
-            flat_denoise = float(np.clip(0.88 + 0.10 * strength, 0.90, 0.98))
-            edge_protect_factor = 0.985
-            bg_suppress_factor = 0.98
-            crisp_boost = 0.065
-        elif mode in ("print_master", "3t_hd"):
+        if mode in ("print_master", "3t_hd"):
             flat_denoise = float(np.clip(0.76 + 0.16 * strength, 0.78, 0.94))
         elif mode == "ge_aw":
             flat_denoise = float(np.clip(0.56 + 0.16 * strength, 0.62, 0.74))
@@ -315,10 +543,10 @@ class MRIAIEngine:
             bg_suppress_factor = 0.68
             crisp_boost = 0.050
         elif seq_type == "STIR_FLAIR":
-            edge_protect_factor = 0.95
-            bg_suppress_factor = 0.50
-            flat_denoise = 0.92
-            crisp_boost = 0.0
+            edge_protect_factor = 0.99
+            bg_suppress_factor = 0.18 if mode == "rician_nlm" else 0.85
+            flat_denoise = min(flat_denoise, 0.78) if mode == "print_master" else min(flat_denoise, 0.68)
+            crisp_boost = max(crisp_boost, 0.062)
         elif seq_type == "T1_SE":
             edge_protect_factor = 0.985
             flat_denoise = min(flat_denoise, 0.78)
@@ -355,21 +583,16 @@ class MRIAIEngine:
             norm = np.ascontiguousarray(np.clip((src - vol_low) / vol_span, 0.0, 1.0), dtype=np.float32)
             raw_norm_slices.append(norm)
 
-            if seq_type != "STIR_FLAIR" and mode in ("sr_15t", "ge_aw", "print_master", "3t_hd", "spine_pro", "fast_mri", "enh6_ultra"):
-                # True Normalized-Convolution GE PURE / SCIC Coil Equalization (zero black-air dilution at skin borders!)
-                fg = (norm > 0.07).astype(np.float32)
-                if np.sum(fg) > 200:
-                    sig_il = max(12.0, min(norm.shape) / 9.5)
-                    num_il = gaussian_filter(norm * fg, sigma=sig_il)
-                    den_il = np.maximum(gaussian_filter(fg, sigma=sig_il), 0.08)
-                    illum = num_il / den_il
-                    ref_illum = float(np.median(illum[fg > 0.5]))
-                    # Compress blinding near-coil fat hot-spots (down to 0.56) & gently lift shaded anatomy (up to 1.32)
-                    coil_gain = np.clip(ref_illum / np.maximum(illum, ref_illum * 0.45), 0.56, 1.32)
-                    gain_weight = np.where(coil_gain < 1.0, 0.72, 0.42 if mode in ("print_master", "3t_hd", "fast_mri", "spine_pro", "ge_aw") else 0.28)
+            if mode in ("sr_15t", "ge_aw", "print_master", "3t_hd", "spine_pro", "fast_mri"):
+                # GE PURE / SCIC Surface Coil Shading Equalization (lifts posterior/inferior coil drop-off without brightening air)
+                illum = gaussian_filter(norm, sigma=max(14.0, min(norm.shape) / 8.0))
+                fg = norm > 0.08
+                if np.any(fg):
+                    ref_illum = float(np.median(illum[fg]))
+                    coil_gain = np.clip(ref_illum / np.maximum(illum, ref_illum * 0.32), 0.88, 1.80)
+                    gain_weight = 0.65 if mode in ("print_master", "3t_hd", "fast_mri") else 0.62 if mode in ("ge_aw", "spine_pro") else 0.35
                     fg_soft = np.clip((norm - 0.04) / 0.06, 0.0, 1.0)
-                    hi_protect = np.where(coil_gain > 1.0, np.clip((0.88 - norm) / 0.36, 0.0, 1.0), 1.0)
-                    eff_gain = 1.0 + fg_soft * gain_weight * hi_protect * (coil_gain - 1.0)
+                    eff_gain = 1.0 + fg_soft * gain_weight * (coil_gain - 1.0)
                     norm_work = np.clip(norm * eff_gain, 0.0, 1.0).astype(np.float32)
                 else:
                     norm_work = norm
@@ -437,41 +660,24 @@ class MRIAIEngine:
             # Coherent Edge Deblurring (computed on the denoised signal curr_clean, NEVER on raw noisy norm_work!)
             if crisp_boost > 0:
                 sigma_detail = 0.75 if mode in ("sr_15t", "3t_hd") else 0.85
-                raw_det = curr_clean - gaussian_filter(curr_clean, sigma=sigma_detail)
-                # Keep full negative detail (-0.048) inside bright CSF/fat so dark nerve roots & septa stay crisp, while rolling off positive bright spikes!
-                pos_rolloff = np.clip((0.95 - curr_clean) / 0.30, 0.15, 1.0)
-                clean_detail = np.where(raw_det < 0, np.clip(raw_det, -0.048, 0.0), np.clip(raw_det, 0.0, 0.014) * pos_rolloff)
+                # Clamp positive detail tightly (+0.015) and roll off near peak brightness to prevent hyperintense/bleed-like spots
+                clean_detail = np.clip(curr_clean - gaussian_filter(curr_clean, sigma=sigma_detail), -0.030, 0.015)
+                peak_rolloff = np.clip((1.02 - curr_clean) / 0.25, 0.25, 1.0)
+                crisp_gate = edge_mask * peak_rolloff
                 crisp_mult = 1.2 if strength <= 0.6 else 1.6 if strength <= 0.85 else 2.0
-                enhanced = np.clip(enhanced + (crisp_boost * crisp_mult) * clean_detail * (0.20 + 0.80 * edge_mask), 0.0, 1.0)
+                enhanced = np.clip(enhanced + (crisp_boost * crisp_mult) * clean_detail * crisp_gate, 0.0, 1.0)
 
-            # T2 Fluid Purity & Cord Contrast with Highlight-Preserving Soft Shoulder (zero white burnout!)
+            # T2 Fluid Purity & Whiteness Boost (+24% CSF-only lift above 0.48 so spinal cord stays dark & crisp against bright CSF)
             if seq_type in ("T2_FSE", "T2_STAR_GRE"):
-                if mode == "enh6_ultra":
-                    csf_fluid_mask = np.clip((enhanced - 0.45) / 0.28, 0.0, 1.0) ** 1.3
-                    # Soft-shoulder lift: (1 - enhanced) preserves 100% of internal nerve-root & fat-septa detail without clipping
-                    enhanced = np.clip(enhanced + 0.45 * csf_fluid_mask * (1.0 - enhanced), 0.0, 1.0)
-                else:
-                    fluid_mask = np.clip((enhanced - 0.56) / 0.28, 0.0, 1.0) ** 1.35
-                    enhanced = np.clip(enhanced + 0.12 * fluid_mask * (1.0 - enhanced), 0.0, 1.0)
-                # Cord & cauda equina nerve-root dark delineation inside bright CSF
-                cord_mask = np.clip((enhanced - 0.16) / 0.16, 0.0, 1.0) * np.clip((0.62 - enhanced) / 0.18, 0.0, 1.0)
-                enhanced = np.clip(enhanced * (1.0 - 0.10 * cord_mask * edge_mask), 0.0, 1.0)
-
-            # ENH-6 Kramer-Bruckner Morphological Shock Filter for Sub-pixel 1px Cortical/Disc Rim Sharpness
-            if mode == "enh6_ultra":
-                from scipy.ndimage import grey_dilation, grey_erosion, laplace
-                lap = laplace(enhanced)
-                dil = grey_dilation(enhanced, size=(3, 3))
-                ero = grey_erosion(enhanced, size=(3, 3))
-                shock = np.where(lap < -0.005, dil, np.where(lap > 0.005, ero, enhanced))
-                enhanced = np.clip((1.0 - 0.42 * edge_mask) * enhanced + (0.42 * edge_mask) * shock, 0.0, 1.0)
+                fluid_mask = np.clip((enhanced - 0.46) / 0.26, 0.0, 1.0) ** 1.1
+                enhanced = np.clip(enhanced * (1.0 + 0.26 * fluid_mask), 0.0, 1.0)
 
             # Calibrated Natural Grain + Structure-Selective Bone/Cartilage Texture (soft tissue stays smooth)
             fast_scan_scale = 0.52 if global_sigma >= 0.024 else 1.0
             u_desc = (description or "").upper()
             is_axial = any(k in u_desc for k in ("AX", "OAX", "TRANS"))
             is_sagittal = any(k in u_desc for k in ("SAG", "OSAG"))
-            if mode in ("fast_mri", "enh6_ultra"):
+            if mode == "fast_mri":
                 grain_ratio = 0.00
             elif mode == "print_master":
                 grain_ratio = 0.24 if seq_type == "STIR_FLAIR" else 0.12 if seq_type == "T1_SE" else 0.22 if seq_type == "PD_ORTHO" else 0.04
@@ -499,38 +705,14 @@ class MRIAIEngine:
             tissue_mask = np.clip(norm_work / 0.08, 0.0, 1.0)
             if seq_type == "PD_ORTHO":
                 # Dual-tissue adaptive grain (#152: تنعم البروتون وتخشن العظم)
+                # Bone marrow gets authentic 32% trabecular grain; meniscus/cartilage/ligaments get 6% velvet smooth
                 bone_marrow_mask = np.clip((norm_work - 0.20) / 0.12, 0.0, 1.0) * np.clip((0.74 - norm_work) / 0.12, 0.0, 1.0)
                 effective_grain = (1.0 - bone_marrow_mask) * 0.06 + bone_marrow_mask * 0.32
                 pd_gate = np.clip(edge_mask ** 0.85, 0.08, 1.0) * (1.0 - bone_marrow_mask) + bone_marrow_mask * np.clip(0.55 + 0.45 * edge_mask, 0.55, 1.0)
                 enhanced = np.clip(enhanced + (effective_grain * tissue_mask * pd_gate) * texture_residual, 0.0, 1.0)
-            elif seq_type in ("T2_FSE", "T2_STAR_GRE"):
-                # Technician feedback 2026-11-25: عايز تى تو خشنه شويه العظم (Bone marrow 36% grain, CSF/soft tissue smooth)
-                bone_marrow_mask = np.clip((norm_work - 0.18) / 0.14, 0.0, 1.0) * np.clip((0.68 - norm_work) / 0.14, 0.0, 1.0)
-                effective_grain = (1.0 - bone_marrow_mask) * 0.10 + bone_marrow_mask * 0.36
-                t2_gate = np.clip(edge_mask ** 0.85, 0.10, 1.0) * (1.0 - bone_marrow_mask) + bone_marrow_mask * np.clip(0.55 + 0.45 * edge_mask, 0.55, 1.0)
-                enhanced = np.clip(enhanced + (effective_grain * tissue_mask * t2_gate) * texture_residual, 0.0, 1.0)
-            elif seq_type == "STIR_FLAIR":
-                # Technician feedback 2026-11-25: Stair عايز ننعم السوفت ونعمل كونترست العظم
-                # Soft tissue gets velvet smooth (0.04 grain), bone marrow edema gets authentic high-contrast definition
-                bone_edema_mask = np.clip((norm_work - 0.20) / 0.16, 0.0, 1.0) * np.clip((0.85 - norm_work) / 0.16, 0.0, 1.0)
-                effective_grain = (1.0 - bone_edema_mask) * 0.04 + bone_edema_mask * 0.26
-                stir_gate = np.clip(edge_mask ** 0.70, 0.08, 1.0)
-                enhanced = np.clip(enhanced + (effective_grain * tissue_mask * stir_gate) * texture_residual, 0.0, 1.0)
-                # Boost bone marrow contrast in STIR
-                enhanced = np.clip(enhanced * (1.0 + 0.18 * bone_edema_mask), 0.0, 1.0)
             else:
-                texture_gate = np.clip(0.55 + 0.45 * edge_mask, 0.55, 1.0) if seq_type == "T1_SE" else np.clip(0.35 + 0.65 * edge_mask, 0.35, 1.0)
+                texture_gate = np.clip(0.55 + 0.45 * edge_mask, 0.55, 1.0) if seq_type in ("T2_STAR_GRE", "T2_FSE", "T1_SE") else np.clip(edge_mask ** 0.70, 0.12, 1.0) if seq_type == "STIR_FLAIR" else np.clip(0.35 + 0.65 * edge_mask, 0.35, 1.0)
                 enhanced = np.clip(enhanced + (grain_ratio * tissue_mask * texture_gate) * texture_residual, 0.0, 1.0)
-
-            # ENH-6 3T High-Field Dynamic S-Curve (Rich marrow + Brilliant CSF + Pure black air)
-            if mode == "enh6_ultra":
-                k_3t = 4.2 if seq_type in ("T2_FSE", "T2_STAR_GRE") else 3.8
-                x0_3t = 0.35 if seq_type in ("T2_FSE", "T2_STAR_GRE") else 0.38
-                sc_raw = 1.0 / (1.0 + np.exp(-k_3t * (enhanced - x0_3t)))
-                sc_0 = 1.0 / (1.0 + np.exp(-k_3t * (0.0 - x0_3t)))
-                sc_1 = 1.0 / (1.0 + np.exp(-k_3t * (1.0 - x0_3t)))
-                sc_norm = np.clip((sc_raw - sc_0) / (sc_1 - sc_0), 0.0, 1.0)
-                enhanced = 0.38 * sc_norm + 0.62 * enhanced
 
             # Display-only Film S-Curve is applied ONLY in print_master mode (never in diagnostic modes!)
             if mode == "print_master":
@@ -547,18 +729,16 @@ class MRIAIEngine:
                 vessel_mask = np.clip((enhanced - 0.18) / 0.25, 0.0, 1.0)
                 enhanced = np.clip(enhanced * (1.0 - 0.12 * (1.0 - vessel_mask)) + 0.06 * vessel_mask * (enhanced ** 0.85), 0.0, 1.0)
 
-            # Highlight-safe clinical tone curves (zero white clipping — preserves all fat septa & nerve roots!)
+            # Clinical axial & T1 adjustments requested by technician (#120 & #124)
             if is_axial:
-                # Lift ONLY dark canal/foraminal shadows (<0.52), gently compress glaring fat highlights (>0.75)
-                shadow_lift = 0.045 * np.sin(np.pi * np.clip(enhanced / 0.52, 0.0, 1.0)) * (enhanced < 0.52)
-                hi_tame = -0.045 * ((np.clip((enhanced - 0.72) / 0.28, 0.0, 1.0)) ** 1.4)
-                enhanced = np.clip(enhanced + shadow_lift + hi_tame, 0.0, 1.0)
+                # Reduce noise & brighten spinal canal / foramina in axial views
+                enhanced = np.clip(np.power(enhanced, 0.82) * 1.08, 0.0, 1.0)
             if seq_type == "T1_SE" and mode != "print_master":
-                # Anchored contrast (0->0, 1->1) with soft highlight shoulder so subcutaneous coil fat never burns out
-                enhanced = np.clip(np.power(enhanced, 1.08), 0.0, 1.0)
-                enhanced = enhanced - 0.05 * ((np.clip((enhanced - 0.75) / 0.25, 0.0, 1.0)) ** 1.5)
+                # Boost T1 contrast: rich bright marrow/fat and deep dark CSF/discs
+                enhanced = np.clip(np.power(enhanced, 1.10) * 1.08, 0.0, 1.0)
             if seq_type == "PD_ORTHO" and mode != "print_master":
-                enhanced = np.clip(np.power(enhanced, 1.06), 0.0, 1.0)
+                # Boost PD contrast & smooth cartilage/meniscus tissue (#127)
+                enhanced = np.clip(np.power(enhanced, 1.08) * 1.06, 0.0, 1.0)
 
             # Technician-calibrated Brightness & Contrast adjustment (default 1.0 / 1.0 = no-op)
             try:
@@ -576,13 +756,13 @@ class MRIAIEngine:
             enhanced = enhanced * (1.0 - bg_suppress_factor * bg_mask)
 
             overflow = np.maximum(vol_f[i] - vol_high, 0.0)
-            restored = np.maximum(enhanced * vol_span + vol_low + overflow, 0.0)
+            restored = enhanced * vol_span + vol_low + overflow
 
             # Auto-upscale all clinical scans to 1024x1024 + Post-Upscale Micro-Acutance to remove bicubic softness
             h_s, w_s = slice_2d.shape
             if 200 <= h_s <= 512 and 200 <= w_s <= 512:
                 from scipy.ndimage import zoom as _zoom
-                scale_factor = 1.0 if seq_type == "STIR_FLAIR" else (4.0 if (h_s <= 256 and w_s <= 256) else 2.0)
+                scale_factor = 4.0 if (h_s <= 256 and w_s <= 256) else 2.0
                 restored = _zoom(restored, scale_factor, order=3)
                 blur_hi = gaussian_filter(restored, sigma=1.1)
                 detail_hi = restored - blur_hi

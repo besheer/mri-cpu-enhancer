@@ -165,6 +165,8 @@ _REPORTED_SERIES_IDS: set[str] = set()
 
 
 def send_bilingual_report_async(job_id: int) -> None:
+    if setting("enable_gemini_report", "0") != "1":
+        return
     def _worker() -> None:
         try:
             with connect() as db:

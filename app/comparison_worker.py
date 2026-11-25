@@ -70,7 +70,7 @@ class ComparisonWorker:
                     ).fetchone() is not None
                 in_calibration = bool(center["calibration_mode"]) if center and "calibration_mode" in center.keys() else False
                 profile_returnable = (job["profile"] in enabled_profile_names())
-                if qc_status == "PASS":
+                if qc_status == "PASS" and setting("enable_gemini_report", "0") == "1":
                     try:
                         from app.telegram_bot import send_bilingual_report_async
                         send_bilingual_report_async(job["id"])

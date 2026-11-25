@@ -643,6 +643,9 @@ class TelegramBotWorker:
                     {"text": "⚡ تنفيذ آخر تعديلات مطلوبة", "callback_data": "exec_latest_modifications"},
                 ],
                 [
+                    {"text": "⏱️ فحص التأخير وسرعة التنفيذ", "callback_data": "check_delay"},
+                ],
+                [
                     {"text": "📡 فحص حالة إرجاع الصور لـ GE", "callback_data": "check_returns"},
                     {"text": "🚀 دفع الصور العالقة", "callback_data": "force_push_unsent"},
                 ],
@@ -689,6 +692,237 @@ class TelegramBotWorker:
 
             ]
         }
+
+    def _delay_keyboard(self) -> dict[str, Any]:
+        copies = int(setting("copies_per_series", "3") or 3)
+        return {
+            "inline_keyboard": [
+                [{"text": "🔄 تحديث فحص التأخير الآن", "callback_data": "check_delay"}],
+                [
+                    {"text": ("✅ " if copies == 1 else "⚡ ") + "سرعة قصوى (نسخة 1 فقط - 3x أسرع)", "callback_data": "speed_1copy"},
+                    {"text": ("✅ " if copies >= 3 else "🎛️ ") + "وضع 3 نسخ لكل سلسلة", "callback_data": "speed_3copy"},
+                ],
+                [
+                    {"text": "📡 فحص إرجاع GE", "callback_data": "check_returns"},
+                    {"text": "📋 القائمة الرئيسية", "callback_data": "status"},
+                ],
+            ]
+        }
+
+    def _format_delay_report(self) -> str:
+        from datetime import datetime, timezone
+
+        def _parse_ts(val: Any) -> datetime | None:
+            if not val:
+                return None
+            s = str(val).strip().replace("T", " ")[:19]
+            try:
+                return datetime.strptime(s, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+            except Exception:
+                return None
+
+        now_utc = datetime.now(timezone.utc)
+
+        # 1. Host CPU & RAM metrics
+        cpu_cores = os.cpu_count() or 4
+        try:
+            l1, l5, _ = os.getloadavg()
+            cpu_pct = int(round((l1 / max(1, cpu_cores)) * 100))
+            cpu_state = "🟢 مريح" if cpu_pct < 75 else ("🟡 مشغول" if cpu_pct <= 115 else "🔴 مضغوط (تزاحم مهام)")
+            cpu_line = f"{cpu_state} — حمل المعالج `{cpu_pct}%` (`Load {l1:.2f}/{l5:.2f}` على `{cpu_cores}` أنوية)"
+        except Exception:
+            cpu_line = f"`{cpu_cores}` أنوية معالجة نشطة"
+
+        ram_line = ""
+        try:
+            mem_info = {}
+            with open("/proc/meminfo", "r", encoding="utf-8") as mf:
+                for ln in mf:
+                    parts = ln.split(":")
+                    if len(parts) == 2:
+                        mem_info[parts[0].strip()] = int(parts[1].strip().split()[0])
+            tot_gb = mem_info.get("MemTotal", 0) / (1024 * 1024)
+            avail_gb = mem_info.get("MemAvailable", 0) / (1024 * 1024)
+            used_gb = max(0.0, tot_gb - avail_gb)
+            ram_line = f" | الذاكرة: `{used_gb:.1f}/{tot_gb:.1f} GB`"
+        except Exception:
+            pass
+
+        # 2. Check Orthanc active incoming transfer from MRI console
+        orthanc_url = os.getenv("ORTHANC_URL", "http://orthanc:8042").rstrip("/")
+        auth = (os.getenv("ORTHANC_USERNAME", "admin"), os.getenv("ORTHANC_PASSWORD", ""))
+        unstable_list = []
+        try:
+            with httpx.Client(auth=auth, timeout=5) as api:
+                for sr in api.get(f"{orthanc_url}/series?expand").json():
+                    if not sr.get("IsStable", True):
+                        d = str(sr.get("MainDicomTags", {}).get("SeriesDescription", "MR")).replace("`", "")
+                        if not d.upper().startswith("ENH"):
+                            unstable_list.append(f"`{d}` ({len(sr.get('Instances', []))} ش)")
+        except Exception:
+            pass
+
+        copies_cfg = int(setting("copies_per_series", "3") or 3)
+
+        with connect() as db:
+            cal_row = db.execute("SELECT calibration_mode FROM centers WHERE id=8").fetchone()
+            cal_on = bool(cal_row and cal_row["calibration_mode"])
+            eff_copies = 5 if cal_on else copies_cfg
+
+            active_job = db.execute(
+                "SELECT cj.id, cj.profile, cj.total_instances, cj.processed_instances, cj.created_at, cj.updated_at, "
+                "COALESCE(ib.description, 'MR') AS desc, COALESCE(ib.instances, 0) AS ib_inst "
+                "FROM comparison_jobs cj LEFT JOIN inbound_series ib ON ib.series_id=cj.source_series_id "
+                "WHERE cj.status='processing' ORDER BY cj.updated_at DESC LIMIT 1"
+            ).fetchone()
+
+            queued_rows = db.execute(
+                "SELECT cj.id, COALESCE(ib.instances, 18) AS inst "
+                "FROM comparison_jobs cj LEFT JOIN inbound_series ib ON ib.series_id=cj.source_series_id "
+                "WHERE cj.status='queued'"
+            ).fetchall()
+            q_jobs_cnt = len(queued_rows)
+            q_slices_cnt = sum(int(r["inst"] or 18) for r in queued_rows)
+
+            ret_sending = db.execute(
+                "SELECT count(*) FROM return_jobs WHERE status IN ('queued', 'sending')"
+            ).fetchone()[0]
+
+            # Fetch recent completed jobs to compute true per-slice AI speed & per-series stage breakdown
+            recent_series = db.execute(
+                "SELECT series_id, description, instances, received_at, status "
+                "FROM inbound_series ORDER BY received_at DESC LIMIT 6"
+            ).fetchall()
+
+            # Build chronological map of recent jobs to separate Queue Wait vs AI Processing accurately
+            recent_cjobs = db.execute(
+                "SELECT id, source_series_id, profile, status, created_at, updated_at, metrics_json "
+                "FROM comparison_jobs WHERE created_at >= datetime('now', '-6 hours') ORDER BY id ASC"
+            ).fetchall()
+
+            prev_finish_ts: datetime | None = None
+            job_timing: dict[int, tuple[float, float]] = {}  # job_id -> (queue_wait_sec, ai_proc_sec)
+            slice_speeds: list[float] = []
+
+            for cj in recent_cjobs:
+                c_ts = _parse_ts(cj["created_at"])
+                u_ts = _parse_ts(cj["updated_at"])
+                m = {}
+                try:
+                    m = json.loads(cj["metrics_json"] or "{}")
+                except Exception:
+                    pass
+                if cj["status"] == "ready" and c_ts and u_ts:
+                    total_span = max(0.5, (u_ts - c_ts).total_seconds())
+                    if "processing_sec" in m and float(m["processing_sec"]) > 0:
+                        ai_s = float(m["processing_sec"])
+                        qw_s = max(0.0, total_span - ai_s)
+                    else:
+                        est_start = max(c_ts, prev_finish_ts) if prev_finish_ts else c_ts
+                        qw_s = max(0.0, (est_start - c_ts).total_seconds())
+                        ai_s = max(1.0, (u_ts - est_start).total_seconds())
+                    job_timing[int(cj["id"])] = (qw_s, ai_s)
+                    prev_finish_ts = u_ts
+
+            avg_sec_per_slice = 1.05
+            # Refine avg_sec_per_slice from recent series
+            spd_samples = []
+            for s in recent_series:
+                fcj = db.execute(
+                    "SELECT id FROM comparison_jobs WHERE source_series_id=? AND status='ready' ORDER BY id ASC LIMIT 1",
+                    (s["series_id"],),
+                ).fetchone()
+                if fcj and int(fcj["id"]) in job_timing and int(s["instances"] or 0) >= 5:
+                    _, ai_s = job_timing[int(fcj["id"])]
+                    if 0.2 <= (ai_s / int(s["instances"])) <= 4.0:
+                        spd_samples.append(ai_s / int(s["instances"]))
+            if spd_samples:
+                avg_sec_per_slice = sum(spd_samples) / len(spd_samples)
+
+            est_queue_sec = int(round(q_slices_cnt * avg_sec_per_slice))
+            if active_job:
+                tot_i = int(active_job["total_instances"] or active_job["ib_inst"] or 18)
+                done_i = int(active_job["processed_instances"] or 0)
+                rem_i = max(2, tot_i - done_i)
+                est_queue_sec += int(round(rem_i * avg_sec_per_slice))
+
+            lines = [
+                "⏱️ *تقرير فحص التأخير وسرعة التنفيذ اللحظي*",
+                f"• *المعالج والذاكرة*: {cpu_line}{ram_line}",
+                f"• *سرعة الذكاء الاصطناعي الفعلية*: `{avg_sec_per_slice:.2f} ثانية/شريحة` (~`{int(round(avg_sec_per_slice * 18))} ث` لكل 18 شريحة)",
+                f"• *نظام النسخ الحالي*: `{eff_copies} نسخ لكل سلسلة` ({'أولوية النسخة الأولى مفعّلة ⚡' if eff_copies > 1 else 'وضع السرعة القصوى ⚡'})",
+            ]
+
+            if unstable_list:
+                lines.append(f"• *نقل جارٍ من جهاز الرنين*: {', '.join(unstable_list)} _(ينتظر انتهاء الرنين من إرسال الشرائح)_")
+
+            if active_job:
+                u_ts = _parse_ts(active_job["updated_at"]) or _parse_ts(active_job["created_at"])
+                elap = int(max(0, (now_utc - u_ts).total_seconds())) if u_ts else 0
+                tot_i = int(active_job["total_instances"] or active_job["ib_inst"] or 0)
+                act_desc = str(active_job["desc"]).replace("`", "")[:24]
+                lines.append(
+                    f"• *يعالج الآن*: `#{active_job['id']}` `{act_desc}` (`{active_job['profile']}`) — منذ `{elap} ث` ({tot_i} شريحة)"
+                )
+            else:
+                lines.append("• *يعالج الآن*: لا يوجد (المعالج متاح فوراً 🟢)")
+
+            lines.append(
+                f"• *طابور الانتظار*: `{q_jobs_cnt}` وظيفة (`{q_slices_cnt}` شريحة) | *إرسال GE الجاري*: `{ret_sending}` | *الانتظار المتوقع*: `~{est_queue_sec} ث`"
+            )
+
+            # Bottleneck root-cause diagnosis
+            bottlenecks = []
+            if q_jobs_cnt >= 3 or est_queue_sec > 45:
+                bottlenecks.append(f"تراكم طابور المعالجة (`{q_jobs_cnt}` وظائف بانتظار الدور، يضيف `~{est_queue_sec} ث`)")
+            if eff_copies >= 3:
+                bottlenecks.append(f"توليد `{eff_copies}` نسخ لكل سلسلة يضاعف حمل المعالج `{eff_copies}x` عند توالي الفحوصات (يمكنك التبديل لنسخة واحدة بالزر أدناه لسرعة 3x)")
+            if unstable_list:
+                bottlenecks.append("جهاز الرنين لا يزال يرسل شرائح السلسلة الحالية إلى Orthanc")
+
+            lines.append("")
+            if bottlenecks:
+                lines.append("🔍 *تشخيص سبب التأخير:*")
+                for b in bottlenecks:
+                    lines.append(f"  ⚠️ {b}")
+            else:
+                lines.append("✅ *التشخيص اللحظي*: لا يوجد أي تأخير أو اختناق — الفحوصات تعالج وتصل إلى `adw` بالسرعة القصوى (`20–30 ثانية`).")
+
+            lines.append("")
+            lines.append("📊 *تفصيل زمن آخر 6 سلاسل (لأول نسخة تصل GE):*")
+            for s in recent_series:
+                s_desc = str(s["description"] or "-").replace("`", "")[:22]
+                inst = int(s["instances"] or 0)
+                rec_ts = _parse_ts(s["received_at"])
+                first_cj = db.execute(
+                    "SELECT cj.id, cj.status, cj.created_at, cj.updated_at, "
+                    "rj.status AS r_status, rj.created_at AS r_created, rj.updated_at AS r_updated "
+                    "FROM comparison_jobs cj LEFT JOIN return_jobs rj ON rj.comparison_job_id=cj.id "
+                    "WHERE cj.source_series_id=? ORDER BY cj.id ASC LIMIT 1",
+                    (s["series_id"],),
+                ).fetchone()
+                if not first_cj:
+                    lines.append(f"• `{s_desc}` ({inst} ش): ⏳ في الاستلام")
+                    continue
+                if first_cj["status"] in ("queued", "processing"):
+                    wait_now = int(max(0, (now_utc - rec_ts).total_seconds())) if rec_ts else 0
+                    st_ar = "يعالج الآن ⚙️" if first_cj["status"] == "processing" else "في الطابور ⏳"
+                    lines.append(f"• `{s_desc}` ({inst} ش): *{st_ar}* منذ `{wait_now} ث`")
+                    continue
+
+                jid = int(first_cj["id"])
+                qw_s, ai_s = job_timing.get(jid, (0.0, 0.0))
+                r_c = _parse_ts(first_cj["r_created"])
+                r_u = _parse_ts(first_cj["r_updated"])
+                net_s = max(1, int(round((r_u - r_c).total_seconds()))) if (r_c and r_u and first_cj["r_status"] == "sent") else 0
+                end_ts = r_u if (r_u and first_cj["r_status"] == "sent") else _parse_ts(first_cj["updated_at"])
+                tot_s = int(max(1, round((end_ts - rec_ts).total_seconds()))) if (rec_ts and end_ts) else int(round(qw_s + ai_s + net_s))
+                badge = "🟢" if tot_s <= 40 else ("🟡" if tot_s <= 90 else "🔴")
+                lines.append(
+                    f"• {badge} `{s_desc}` ({inst} ش): إجمالي *{tot_s} ث* "
+                    f"_(طابور `{int(round(qw_s))}ث` + ذكاء `{int(round(ai_s))}ث` + إرسال `{net_s}ث`)_"
+                )
+        return "\n".join(lines)
 
     def _format_return_status(self, force_push: bool = False) -> str:
         orthanc_url = os.getenv("ORTHANC_URL", "http://orthanc:8042").rstrip("/")
@@ -857,6 +1091,30 @@ class TelegramBotWorker:
 
         if data == "status":
             reply = self._format_status()
+        elif data == "check_delay":
+            self._api(
+                client,
+                "sendMessage",
+                {"chat_id": chat_id, "text": self._format_delay_report(), "parse_mode": "Markdown", "reply_markup": self._delay_keyboard()},
+            )
+            return
+        elif data in ("speed_1copy", "speed_3copy"):
+            new_n = "1" if data == "speed_1copy" else "3"
+            set_setting("copies_per_series", new_n)
+            with connect() as db:
+                db.execute("UPDATE centers SET calibration_mode=0 WHERE id=8")
+            audit("TELEGRAM_SPEED_MODE", "settings", "8", f"copies_per_series={new_n};chat={chat_id}")
+            hdr = (
+                "⚡ *تم تفعيل وضع السرعة القصوى (نسخة واحدة فقط لكل سلسلة — أسرع 3 مرات)!*\n\n"
+                if new_n == "1"
+                else "🎛️ *تم تفعيل وضع الـ 3 نسخ لكل سلسلة (مع أولوية إرسال النسخة الأولى فوراً)!*\n\n"
+            )
+            self._api(
+                client,
+                "sendMessage",
+                {"chat_id": chat_id, "text": hdr + self._format_delay_report(), "parse_mode": "Markdown", "reply_markup": self._delay_keyboard()},
+            )
+            return
         elif data == "check_returns":
             reply = self._format_return_status(force_push=False)
         elif data == "force_push_unsent":
@@ -1454,11 +1712,41 @@ class TelegramBotWorker:
             )
             return
 
-        if text == "/status":
+        t_norm = text.strip().lower()
+        if t_norm.startswith("/status") or t_norm in ("حالة السيرفر", "حاله السيرفر"):
             self._api(
                 client,
                 "sendMessage",
                 {"chat_id": chat_id, "text": self._format_status(), "parse_mode": "Markdown", "reply_markup": self._menu_keyboard()},
+            )
+            return
+
+        if (
+            t_norm.startswith("/delay")
+            or t_norm.startswith("/speed")
+            or t_norm.startswith("/latency")
+            or any(k in t_norm for k in ("تاخير", "تأخير", "بطء", "بطئ", "سرعة التنفيذ", "سرعه التنفيذ", "فحص السرع"))
+        ):
+            self._api(
+                client,
+                "sendMessage",
+                {"chat_id": chat_id, "text": self._format_delay_report(), "parse_mode": "Markdown", "reply_markup": self._delay_keyboard()},
+            )
+            return
+
+        if t_norm.startswith("/returns") or any(k in t_norm for k in ("فحص الارجاع", "فحص الإرجاع", "حالة الارجاع", "حاله الارجاع", "حالة الإرجاع")):
+            self._api(
+                client,
+                "sendMessage",
+                {"chat_id": chat_id, "text": self._format_return_status(force_push=False), "parse_mode": "Markdown", "reply_markup": self._menu_keyboard()},
+            )
+            return
+
+        if t_norm.startswith("/push") or any(k in t_norm for k in ("دفع الصور", "الصور العالقه", "الصور العالقة")):
+            self._api(
+                client,
+                "sendMessage",
+                {"chat_id": chat_id, "text": self._format_return_status(force_push=True), "parse_mode": "Markdown", "reply_markup": self._menu_keyboard()},
             )
             return
 
@@ -1575,6 +1863,19 @@ class TelegramBotWorker:
             try:
                 me = self._api(client, "getMe")
                 self.bot_username = me.get("result", {}).get("username", "")
+                self._api(
+                    client,
+                    "setMyCommands",
+                    {
+                        "commands": [
+                            {"command": "delay", "description": "⏱️ فحص التأخير وسرعة التنفيذ وتشخيص البطء"},
+                            {"command": "returns", "description": "📡 فحص حالة إرجاع الصور إلى GE"},
+                            {"command": "push", "description": "🚀 دفع أي صور عالقة فوراً إلى GE"},
+                            {"command": "status", "description": "📊 حالة السيرفر وآخر فحص"},
+                            {"command": "start", "description": "🎛️ فتح لوحة التحكم الرئيسية"},
+                        ]
+                    },
+                )
                 log.info("Telegram bot started: @%s", self.bot_username)
             except Exception as exc:
                 self.last_error = str(exc)

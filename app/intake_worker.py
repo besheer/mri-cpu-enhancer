@@ -372,8 +372,9 @@ class IntakeWorker:
                     ]
                     if not is_stir_scan and "RAD4AI_PRINT_MASTER" in enabled_set:
                         candidates.append(("RAD4AI_PRINT_MASTER", "MEDIUM"))
+                    max_copies = max(1, int(setting("copies_per_series", "3") or 3))
                     for cand_prof, cand_str in candidates:
-                        if len(specs) >= 3:
+                        if len(specs) >= max_copies:
                             break
                         if cand_prof != profile and cand_prof in enabled_set:
                             specs.append((cand_prof, cand_str))

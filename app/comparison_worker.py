@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import threading
+import time
 import zipfile
 
 import httpx
@@ -38,7 +39,12 @@ class ComparisonWorker:
 
     def _next_job(self):
         with connect() as db:
-            job = db.execute("SELECT * FROM comparison_jobs WHERE status='queued' ORDER BY id LIMIT 1").fetchone()
+            job = db.execute(
+                "SELECT cj.* FROM comparison_jobs cj WHERE cj.status='queued' "
+                "ORDER BY (SELECT count(*) FROM comparison_jobs prev "
+                "          WHERE prev.source_series_id = cj.source_series_id AND prev.id < cj.id) ASC, "
+                "cj.id ASC LIMIT 1"
+            ).fetchone()
             if job:
                 db.execute("UPDATE comparison_jobs SET status='processing',processed_instances=0,error=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=?", (job["id"],))
                 db.execute("UPDATE inbound_series SET status='PROCESSING',updated_at=CURRENT_TIMESTAMP WHERE job_id=?", (job["id"],))
@@ -55,9 +61,11 @@ class ComparisonWorker:
                 continue
             try:
                 job_ack = bool(job["acknowledged"]) if "acknowledged" in job.keys() else False
+                _t0 = time.monotonic()
                 output_id, metrics, qc_status, qc_reasons, center = self._process(
                     job["source_series_id"], job["profile"], job["strength"], acknowledged=job_ack
                 )
+                metrics["processing_sec"] = round(time.monotonic() - _t0, 2)
                 with connect() as db:
                     db.execute("UPDATE comparison_jobs SET status='ready',output_series_id=?,metrics_json=?,qc_status=?,qc_reasons=?,updated_at=CURRENT_TIMESTAMP WHERE id=?",
                                (output_id, json.dumps(metrics), qc_status, json.dumps(qc_reasons), job["id"]))

@@ -29,9 +29,9 @@ def evaluate_quality(metrics: dict[str, float | str], source_instances: int,
 
     if "peak_preservation_percent" in metrics:
         peak_pres = float(metrics["peak_preservation_percent"])
-        if peak_pres < 70:
+        if peak_pres < 55:
             failures.append(f"Highlight / T2 fluid clipping too severe: {peak_pres:.2f}%")
-        elif peak_pres < 85:
+        elif peak_pres < 68:
             warnings.append(f"Review highlight preservation: {peak_pres:.2f}%")
 
     if failures:

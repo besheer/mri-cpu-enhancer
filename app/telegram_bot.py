@@ -755,6 +755,34 @@ class TelegramBotWorker:
 
         if data == "status":
             reply = self._format_status()
+        elif data.startswith("lk_knee_"):
+            lvl_map = {
+                "1": ("RAD4AI_SPINE_PRO", "Spine Pro (عظم خشن + تنعيم غضاريف)"),
+                "2": ("RAD4AI_3T_HD", "3T-HD (دقة عالية وتفاصيل قشرية)"),
+                "3": ("RAD4AI_FAST_MRI", "FastMRI (تنعيم حريري مخملي)"),
+                "4": ("RAD4AI_ENH6_ULTRA", "ENH-6 Ultra (تباين سينمائي عالي)"),
+            }
+            choice = data.split("_")[-1]
+            prof, label = lvl_map.get(choice, ("RAD4AI_SPINE_PRO", "Spine Pro"))
+            set_setting("pref_KNEE", prof)
+            with connect() as db:
+                db.execute("UPDATE centers SET auto_profile=? WHERE id=8", (prof,))
+                knee_row = db.execute(
+                    "SELECT series_id, description FROM inbound_series WHERE description LIKE '%PD%' OR description LIKE '%KNEE%' OR description LIKE '%SAG%' ORDER BY received_at DESC LIMIT 1"
+                ).fetchone()
+                new_jid = None
+                if knee_row:
+                    cur = db.execute(
+                        "INSERT INTO comparison_jobs (source_series_id, profile, strength, status, acknowledged) VALUES (?, ?, 'STRONG', 'queued', 1)",
+                        (knee_row["series_id"], prof)
+                    )
+                    new_jid = cur.lastrowid
+            audit("TECHNICIAN_KNEE_PROFILE_LOCKED", "profile", prof, f"chat={chat_id};choice={choice}")
+            reply = (
+                f"🎯 *تم بنجاح اعتماد المستوى ({label}) وتثبيته كمعيار تلقائي لكافة فحوصات الركبة (Knee)!*\n\n"
+                f"• تم إرسال السلسلة الكاملة الآن تلقائياً إلى محطة العمل `adw:4006` (فحص `#{new_jid or '-'}`).\n"
+                f"• أي فحص ركبة قادم سيتم تحسينه بهذا المستوى المعتمد تلقائياً دون الحاجة لإعادة الاختيار."
+            )
         elif data == "feedbacks":
             reply = self._format_feedbacks()
         elif data.startswith("str_"):

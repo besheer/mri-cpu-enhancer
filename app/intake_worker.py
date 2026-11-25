@@ -275,9 +275,13 @@ class IntakeWorker:
                     ).fetchone()
                     if existing_row:
                         prev_inst = int(existing_row["instances"] or 0)
-                        if len(instances) > prev_inst and str(existing_row["status"] or "") not in ("SKIPPED_LOCALIZER",):
+                        curr_status = str(existing_row["status"] or "")
+                        if len(instances) > prev_inst and curr_status not in ("SKIPPED_LOCALIZER",):
                             db.execute("DELETE FROM inbound_series WHERE series_id=?", (sid,))
                             grew_from = prev_inst
+                        elif curr_status == "RECEIVED":
+                            # Resume unprocessed received series
+                            db.execute("DELETE FROM inbound_series WHERE series_id=?", (sid,))
                         else:
                             continue
                 if grew_from is not None:
@@ -356,12 +360,13 @@ class IntakeWorker:
                     audit("AUTO_CALIBRATION_QUEUED", "series", sid, f"jobs={job_ids};profile={profile}")
                 else:
                     specs = [(profile, strength)]
+                    is_stir_scan = any(k in u_desc for k in ("STIR", "FAT", "SPAIR", "FATSAT"))
                     candidates = [
                         ("RAD4AI_SPINE_PRO", "STRONG"),
                         ("RAD4AI_3T_HD", "STRONG"),
                         ("RAD4AI_FAST_MRI", "STRONG"),
                     ]
-                    if not is_stir and "RAD4AI_PRINT_MASTER" in enabled_set:
+                    if not is_stir_scan and "RAD4AI_PRINT_MASTER" in enabled_set:
                         candidates.append(("RAD4AI_PRINT_MASTER", "MEDIUM"))
                     for cand_prof, cand_str in candidates:
                         if len(specs) >= 3:

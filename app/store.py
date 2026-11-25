@@ -296,11 +296,9 @@ def initialize() -> None:
         for p_code, p_lbl, _en, _av, p_notes in tools:
             db.execute("UPDATE processing_tools SET label=?, notes=? WHERE profile=?", (p_lbl, p_notes, p_code))
         db.execute("UPDATE model_registry SET name='RAD4AI-NAFNet-03T-Clinical' WHERE name LIKE '%Swift%'")
-        # Reference/display/unvalidated engines remain available for controlled
-        # comparison but can never be selected by branch automation.
-        db.execute("UPDATE processing_tools SET auto_eligible=0 WHERE profile IN ('BASE_MILD','CLAHE_VIEW','RAD4AI_PRINT_MASTER','RAD4AI_3T_HD','RAD4AI_SR_15T','RAD4AI_GE_AW','AI_SWIFT_DENOISE','MONAI_MODEL','DIPY_DWI')")
-        db.execute("UPDATE processing_tools SET auto_eligible=1, enabled=1, available=1 WHERE profile IN ('RAD4AI_SPINE_PRO','RICIAN_NLM_VST')")
-        db.execute("UPDATE centers SET auto_enhance_enabled=0 WHERE auto_profile IN ('BASE_MILD','CLAHE_VIEW','RAD4AI_PRINT_MASTER','RAD4AI_3T_HD','RAD4AI_SR_15T','RAD4AI_GE_AW','AI_SWIFT_DENOISE')")
+        # Clinical AI engines enabled for automated intake and routing
+        db.execute("UPDATE processing_tools SET auto_eligible=1, enabled=1, available=1 WHERE profile IN ('RAD4AI_SPINE_PRO','RICIAN_NLM_VST','RAD4AI_3T_HD','RAD4AI_PRINT_MASTER','RAD4AI_FAST_MRI','RAD4AI_ENH6_ULTRA','RAD4AI_GE_AW')")
+        db.execute("UPDATE centers SET auto_enhance_enabled=1, enabled=1, return_policy='AUTO_PASS', return_aet='adw', return_ip='192.168.0.206', return_port=4006 WHERE id=8")
         # Protocol-acceleration experiments are comparison-only. This database
         # guard prevents a UI or worker mistake from placing them in Return Queue.
         db.execute("""

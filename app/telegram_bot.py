@@ -350,18 +350,16 @@ def _feedback_keyboard_for_job(job_id: int, slice_idx: int = 0, total_slices: in
         ])
     rows.extend([
         [
-            {"text": "💎 تطبيق مستوى ENH-6 فائق الدقة", "callback_data": f"apply_enh6_{job_id}"},
+            {"text": "👍 نعم (راضٍ تماماً)", "callback_data": f"fb_yes_{job_id}"},
+            {"text": "👎 لا (غير راضٍ)", "callback_data": f"fb_no_{job_id}"},
         ],
         [
-            {"text": "⚡ تنفيذ آخر تعديلات مطلوبة", "callback_data": "exec_latest_modifications"},
-        ],
-        [
-            {"text": "✅ ممتاز وموافق", "callback_data": f"fb_ok_{job_id}"},
             {"text": "🌾 يحتاج خشونة", "callback_data": f"fb_grain_{job_id}"},
+            {"text": "🧈 يحتاج تنعيم", "callback_data": f"fb_smooth_{job_id}"},
         ],
         [
-            {"text": "🧈 يحتاج تنعيم", "callback_data": f"fb_smooth_{job_id}"},
-            {"text": "❌ مرفوض", "callback_data": f"fb_reject_{job_id}"},
+            {"text": "💎 إعادة بالمعايرة القصوى ENH-6", "callback_data": f"apply_enh6_{job_id}"},
+            {"text": "⚡ تنفيذ آخر تعديل مطلوب", "callback_data": "exec_latest_modifications"},
         ],
     ])
     return {"inline_keyboard": rows}
@@ -1270,6 +1268,8 @@ class TelegramBotWorker:
             action = parts[1] if len(parts) > 1 else "ok"
             jid = parts[2] if len(parts) > 2 else ""
             verdict_map = {
+                "yes": ("APPROVED", "👍 نعم (راضٍ تماماً)"),
+                "no": ("REJECT", "👎 لا (غير راضٍ)"),
                 "ok": ("APPROVED", "✅ ممتاز وموافق"),
                 "grain": ("MORE_GRAIN", "🌾 يحتاج خشونة"),
                 "smooth": ("SMOOTHER", "🧈 يحتاج تنعيم"),
@@ -1297,7 +1297,22 @@ class TelegramBotWorker:
                 source_aet=f"tg:{chat_id}",
             )
             audit("TELEGRAM_PHOTO_FEEDBACK", "feedback", str(fid), f"job={jid};verdict={verdict}")
-            reply = f"{label} — تم تسجيل تقييمك بنجاح برقم `#{fid}`."
+            _nl = chr(10)
+            if action in ("yes", "ok"):
+                reply = (
+                    "👍 *تم تسجيل رضاك وموافقتك التامة على الفحص #" + str(jid) + " بنجاح!* (تقييم #" + str(fid) + ")" + _nl +
+                    "• السلسلة: `" + str(sdesc or "-") + "`" + _nl +
+                    "• شكراً لك يا هندسة؛ سيتم الحفاظ على هذه المعايير."
+                )
+            elif action in ("no", "reject"):
+                reply = (
+                    "👎 *تم تسجيل عدم رضاك عن الفحص #" + str(jid) + " (تقييم #" + str(fid) + ")!*" + _nl +
+                    "• السلسلة: `" + str(sdesc or "-") + "`" + _nl +
+                    "✍️ *ما هو التعديل المطلوب لضبط الصورة؟*" + _nl +
+                    "اكتب في رسالة أو سجّل فويس بالتعديل المطلوب (مثل: _تفتيح_، _تنعيم_، _زيادة تباين_، _زيادة حدة العظم_) وسيطبقه السيرفر فوراً ويُرسله لـ GE!"
+                )
+            else:
+                reply = f"{label} — تم تسجيل تقييمك بنجاح برقم `#{fid}`."
         elif data.startswith("bc_"):
             br = float(setting("clinic_brightness", "1.0") or 1.0)
             ct = float(setting("clinic_contrast", "1.0") or 1.0)
@@ -1770,12 +1785,65 @@ class TelegramBotWorker:
                 except Exception:
                     pass
 
-        verdict, level = _detect_verdict_and_level(text)
         last_sdesc = ""
         with connect() as db:
             row = db.execute("SELECT description FROM inbound_series ORDER BY received_at DESC LIMIT 1").fetchone()
             if row:
                 last_sdesc = str(row["description"] or "")
+
+        stripped_t = text.strip().lower()
+        if stripped_t in ("نعم", "تمام", "ممتاز", "كويس", "راضي", "راض", "ok", "yes", "موافق"):
+            fid = record_feedback(
+                source="telegram",
+                patient_name=sender,
+                study_description="Telegram Quick Feedback",
+                series_description=last_sdesc,
+                level="",
+                verdict="APPROVED",
+                note=text,
+                source_aet=f"tg:{chat_id}",
+            )
+            audit("TELEGRAM_SATISFACTION_YES", "feedback", str(fid), f"chat={chat_id}")
+            ack = (
+                "👍 *شكراً جزيلاً يا هندسة! تم تسجيل رضاك التام عن الفحص بنجاح.*\n"
+                "• السلسلة المعتمدة: `" + str(last_sdesc or "-") + "`\n"
+                "• رقم التقييم: `#" + str(fid) + "`\n"
+                "• سيتم اعتماد هذه المعايير للفحوصات التالية."
+            )
+            self._api(
+                client,
+                "sendMessage",
+                {"chat_id": chat_id, "text": ack, "parse_mode": "Markdown", "reply_markup": self._menu_keyboard()},
+            )
+            return
+
+        if stripped_t in ("لا", "مش راضي", "غير راضي", "no", "رفض", "مرفوض", "مش عاجبني"):
+            fid = record_feedback(
+                source="telegram",
+                patient_name=sender,
+                study_description="Telegram Quick Feedback",
+                series_description=last_sdesc,
+                level="",
+                verdict="REJECT",
+                note=text,
+                source_aet=f"tg:{chat_id}",
+            )
+            audit("TELEGRAM_SATISFACTION_NO", "feedback", str(fid), f"chat={chat_id}")
+            ack = (
+                "👎 *تم تسجيل عدم رضاك عن الفحص الأخير.*\n"
+                "• السلسلة: `" + str(last_sdesc or "-") + "`\n"
+                "• رقم التقييم: `#" + str(fid) + "`\n"
+                "✍️ *ما هو التعديل المطلوب لضبط الصورة؟*\n"
+                "اكتب طلبك (مثلاً: _تفتيح_، _زيادة تباين_، _تخفيف التنعيم_، أو _زيادة حدة العظم_) أو أرسل فويس نوت، وسيطبقها السيرفر فوراً ويُرسلها لـ GE."
+            )
+            self._api(
+                client,
+                "sendMessage",
+                {"chat_id": chat_id, "text": ack, "parse_mode": "Markdown", "reply_markup": self._menu_keyboard()},
+            )
+            return
+
+        verdict, level = _detect_verdict_and_level(text)
 
         fid = record_feedback(
             source="telegram",

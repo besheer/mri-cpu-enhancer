@@ -105,7 +105,8 @@ class ReturnWorker:
                             f"• السلسلة المعالجة: `{_cj['desc'] or '-'}` (`#{_cj['id']}`)\n"
                             f"• البروفايل المطبق: `{_cj['profile']}` ({_cj['strength']}) | جودة الفحص: *{_cj['qc_status']}*\n"
                             f"• الحواف: `{_m.get('edge_preservation_percent', '-')}%` | تخفيض الضوضاء: `{_m.get('noise_change_percent', '-')}%`\n"
-                            f"• الفحص جاهز الآن على محطة العمل GE Advantage Workstation."
+                            f"• الفحص جاهز الآن على محطة العمل GE Advantage Workstation.\n\n"
+                            f"❓ *هل أنت راضٍ عن جودة هذا الفحص؟* (اضغط نعم 👍 أو لا 👎 بالأسفل 👇)"
                         )
                         _sent_cnt = 0
                         if _cj["source_series_id"] and _cj["output_series_id"]:

@@ -190,8 +190,11 @@ def process_volume(volume: np.ndarray, profile: str, strength: str = "MEDIUM",
     dst_noise = float(np.std(dst_eval - gaussian_filter(dst_eval, sigma=(0, 1, 1))))
     src_smooth = gaussian_filter(src, sigma=(0, 1.0, 1.0))
     dst_smooth = gaussian_filter(dst_eval, sigma=(0, 1.0, 1.0))
-    g_src = np.hypot(sobel(src_smooth, axis=1), sobel(src_smooth, axis=2)).ravel()
-    g_dst = np.hypot(sobel(dst_smooth, axis=1), sobel(dst_smooth, axis=2)).ravel()
+    g_src_full = np.hypot(sobel(src_smooth, axis=1), sobel(src_smooth, axis=2))
+    g_dst_full = np.hypot(sobel(dst_smooth, axis=1), sobel(dst_smooth, axis=2))
+    fg_edge_mask = g_src_full >= float(np.percentile(g_src_full, 55.0))
+    g_src = g_src_full[fg_edge_mask].ravel() if np.any(fg_edge_mask) else g_src_full.ravel()
+    g_dst = g_dst_full[fg_edge_mask].ravel() if np.any(fg_edge_mask) else g_dst_full.ravel()
     if g_src.std() > 1e-9 and g_dst.std() > 1e-9:
         raw_corr = float(np.corrcoef(g_src, g_dst)[0, 1])
         if np.isnan(raw_corr):

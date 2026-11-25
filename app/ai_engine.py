@@ -76,10 +76,59 @@ class MRIAIEngine:
             return "T1_SE"
         return "GENERAL_MR"
 
+    def _enhance_stir(self, volume: np.ndarray, strength: float = 0.85) -> np.ndarray:
+        """Dedicated Clinical STIR / Fat-Suppressed Engine:
+        - Velvet soft-tissue smoothing (zero grain in muscles and suppressed fat).
+        - Multi-scale bone edema & fluid hyperintensity contrast lift (+22%).
+        - No SCIC surface coil shading distortion on dark fat.
+        - No ringing artifacts (preserves native matrix, zero acutance halos).
+        - Non-negative dynamic range.
+        """
+        vol_f = volume.astype(np.float32)
+        vol_low = float(np.percentile(vol_f, 0.5))
+        vol_high = float(np.percentile(vol_f, 99.96))
+        vol_span = max(vol_high - vol_low, 1.0)
+        
+        num_slices = volume.shape[0]
+        results = []
+        
+        for i in range(num_slices):
+            slice_2d = volume[i]
+            raw = vol_f[i]
+            norm = np.clip((raw - vol_low) / vol_span, 0.0, 1.0)
+            
+            # 1. Structure-Tensor Tangent Coherent Restoration
+            clean, _ = structure_tensor_tangent_restore(norm, strength=min(1.10, strength * 1.15), sigma_est=0.038)
+            
+            # 2. Pure Velvet Smoothing on Soft Tissues
+            smooth_soft = gaussian_filter(clean, sigma=0.85)
+            edge_map = np.clip(np.abs(clean - gaussian_filter(clean, 1.2)) / 0.06, 0.0, 1.0)
+            velvet = (1.0 - edge_map) * smooth_soft + edge_map * clean
+            
+            # 3. Bone Marrow / Edema / Fluid Contrast Lift
+            bone_edema = np.clip((velvet - 0.20) / 0.18, 0.0, 1.0) ** 1.15
+            final_norm = velvet * (1.0 + 0.22 * bone_edema)
+            
+            # 4. Zero Background Floor outside body
+            bg = np.clip(velvet / 0.035, 0.0, 1.0)
+            final_norm = np.clip(final_norm * bg, 0.0, 1.0)
+            
+            restored = np.clip(final_norm * vol_span + vol_low, 0.0, None)
+            
+            if np.issubdtype(slice_2d.dtype, np.integer):
+                info = np.iinfo(slice_2d.dtype)
+                results.append(np.rint(np.clip(restored, info.min, info.max)).astype(slice_2d.dtype))
+            else:
+                results.append(restored.astype(slice_2d.dtype))
+                
+        return np.stack(results, axis=0)
+
     def enhance_volume(self, volume: np.ndarray, strength: float = 0.8, mode: str = "standard",
                        description: str = "") -> np.ndarray:
         seq_type = self.detect_sequence_type(description)
         u_desc_init = (description or "").upper()
+        if seq_type == "STIR_FLAIR":
+            return self._enhance_stir(volume, strength=strength)
         is_axial = any(k in u_desc_init for k in ("AX", "OAX", "TRANS"))
 
         # Calibrated clinical strength mapping (0.5=MILD, 0.8=MEDIUM, 1.0=STRONG)
@@ -113,10 +162,10 @@ class MRIAIEngine:
             bg_suppress_factor = 0.68
             crisp_boost = 0.050
         elif seq_type == "STIR_FLAIR":
-            edge_protect_factor = 0.99
-            bg_suppress_factor = 0.18 if mode == "rician_nlm" else 0.85
-            flat_denoise = min(flat_denoise, 0.78) if mode == "print_master" else min(flat_denoise, 0.68)
-            crisp_boost = max(crisp_boost, 0.062)
+            edge_protect_factor = 0.95
+            bg_suppress_factor = 0.50
+            flat_denoise = 0.92
+            crisp_boost = 0.0
         elif seq_type == "T1_SE":
             edge_protect_factor = 0.985
             flat_denoise = min(flat_denoise, 0.78)
@@ -153,7 +202,7 @@ class MRIAIEngine:
             norm = np.ascontiguousarray(np.clip((src - vol_low) / vol_span, 0.0, 1.0), dtype=np.float32)
             raw_norm_slices.append(norm)
 
-            if mode in ("sr_15t", "ge_aw", "print_master", "3t_hd", "spine_pro", "fast_mri", "enh6_ultra"):
+            if seq_type != "STIR_FLAIR" and mode in ("sr_15t", "ge_aw", "print_master", "3t_hd", "spine_pro", "fast_mri", "enh6_ultra"):
                 # GE PURE / SCIC Surface Coil Shading Equalization (lifts posterior/inferior coil drop-off without brightening air)
                 illum = gaussian_filter(norm, sigma=max(14.0, min(norm.shape) / 8.0))
                 fg = norm > 0.08
@@ -366,13 +415,13 @@ class MRIAIEngine:
             enhanced = enhanced * (1.0 - bg_suppress_factor * bg_mask)
 
             overflow = np.maximum(vol_f[i] - vol_high, 0.0)
-            restored = enhanced * vol_span + vol_low + overflow
+            restored = np.maximum(enhanced * vol_span + vol_low + overflow, 0.0)
 
             # Auto-upscale all clinical scans to 1024x1024 + Post-Upscale Micro-Acutance to remove bicubic softness
             h_s, w_s = slice_2d.shape
             if 200 <= h_s <= 512 and 200 <= w_s <= 512:
                 from scipy.ndimage import zoom as _zoom
-                scale_factor = 4.0 if (h_s <= 256 and w_s <= 256) else 2.0
+                scale_factor = 1.0 if seq_type == "STIR_FLAIR" else (4.0 if (h_s <= 256 and w_s <= 256) else 2.0)
                 restored = _zoom(restored, scale_factor, order=3)
                 blur_hi = gaussian_filter(restored, sigma=1.1)
                 detail_hi = restored - blur_hi

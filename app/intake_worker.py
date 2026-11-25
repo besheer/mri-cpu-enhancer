@@ -45,12 +45,16 @@ def resolve_scan_profile_and_strength(
         if is_pd:
             return "RAD4AI_SPINE_PRO", "STRONG"
         if is_stir and "FLAIR" not in u:
-            # Technician feedback 2026-11-25: STIR requires velvet soft-tissue denoise + bone marrow contrast, not film S-curve
-            if "RAD4AI_SPINE_PRO" in enabled_set:
-                return "RAD4AI_SPINE_PRO", "STRONG"
+            pref_stir = setting("pref_STIR", "")
+            if pref_stir and pref_stir in enabled_set:
+                return pref_stir, "STRONG"
             if "RAD4AI_3T_HD" in enabled_set:
                 return "RAD4AI_3T_HD", "STRONG"
             return "RAD4AI_SPINE_PRO", "STRONG"
+        if "KNEE" in u:
+            pref_knee = setting("pref_KNEE", "")
+            if pref_knee and pref_knee in enabled_set:
+                return pref_knee, "STRONG"
         if "T1" in u and "RAD4AI_PRINT_MASTER" in enabled_set:
             return "RAD4AI_PRINT_MASTER", "MEDIUM"
         if "T2" in u or "T1" in u:

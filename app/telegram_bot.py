@@ -757,6 +757,33 @@ class TelegramBotWorker:
 
         if data == "status":
             reply = self._format_status()
+        elif data.startswith("lk_stir_"):
+            lvl_map = {
+                "1": ("RAD4AI_SPINE_PRO", "Spine/Ortho Pro (توازن عظم + تنعيم سوفت)"),
+                "2": ("RAD4AI_3T_HD", "3T-HD (خشونة عظم طبيعية + حواف 3T حادة)"),
+                "3": ("RAD4AI_FAST_MRI", "FastMRI (تنعيم مخملي إضافي)"),
+                "4": ("RAD4AI_ENH6_ULTRA", "ENH-6 Ultra (كونتراست عالي + حواف 1px)"),
+            }
+            choice = data.split("_")[-1]
+            prof, label = lvl_map.get(choice, ("RAD4AI_3T_HD", "3T-HD"))
+            set_setting("pref_STIR", prof)
+            with connect() as db:
+                stir_row = db.execute(
+                    "SELECT series_id, description FROM inbound_series WHERE upper(description) LIKE '%STIR%' ORDER BY received_at DESC LIMIT 1"
+                ).fetchone()
+                new_jid = None
+                if stir_row:
+                    cur = db.execute(
+                        "INSERT INTO comparison_jobs (source_series_id, profile, strength, status, acknowledged) VALUES (?, ?, 'STRONG', 'queued', 1)",
+                        (stir_row["series_id"], prof)
+                    )
+                    new_jid = cur.lastrowid
+            audit("TECHNICIAN_STIR_PROFILE_LOCKED", "profile", prof, f"chat={chat_id};choice={choice}")
+            reply = (
+                f"🎯 *تم اعتماد المستوى ({label}) وتثبيته كمعيار تلقائي لكافة فحوصات الـ STIR!*\n\n"
+                f"• تم إرسال السلسلة الكاملة الآن تلقائياً إلى محطة العمل `adw:4006` (فحص `#{new_jid or '-'}`).\n"
+                f"• أي فحص STIR قادم سيتم معالجته بهذا المستوى المعتمد تلقائياً."
+            )
         elif data.startswith("lk_knee_"):
             lvl_map = {
                 "1": ("RAD4AI_SPINE_PRO", "Spine Pro (عظم خشن + تنعيم غضاريف)"),

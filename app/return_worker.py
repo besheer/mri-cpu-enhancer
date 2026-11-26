@@ -63,7 +63,20 @@ class ReturnWorker:
                 db.execute("UPDATE return_jobs SET status='sending',attempts=attempts+1,updated_at=CURRENT_TIMESTAMP WHERE id=?", (job["id"],))
             return job
 
+    def _register_modalities(self) -> None:
+        try:
+            with connect() as db:
+                centers = db.execute("SELECT slug, return_aet, return_ip, return_port FROM centers WHERE enabled=1").fetchall()
+            with httpx.Client(auth=self.auth, timeout=10) as api:
+                for c in centers:
+                    api.put(f"{self.url}/modalities/{c['slug']}", json={
+                        "AET": c["return_aet"], "Host": c["return_ip"], "Port": c["return_port"]
+                    })
+        except Exception:
+            pass
+
     def _run(self) -> None:
+        self._register_modalities()
         while not self.stop_event.is_set():
             if setting("pause_return") == "1" or setting("maintenance_mode") == "1":
                 self.stop_event.wait(2)

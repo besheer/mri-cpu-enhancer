@@ -78,27 +78,25 @@ class MRIAIEngine:
 
     def enhance_volume(self, volume: np.ndarray, strength: float = 0.8, mode: str = "standard",
                        description: str = "") -> np.ndarray:
+        if mode == "enh6_ultra":
+            mode = "3t_hd"
         seq_type = self.detect_sequence_type(description)
-        u_desc_init = (description or "").upper()
-        is_axial = any(k in u_desc_init for k in ("AX", "OAX", "TRANS"))
 
         # Calibrated clinical strength mapping (0.5=MILD, 0.8=MEDIUM, 1.0=STRONG)
-        if mode in ("print_master", "3t_hd", "enh6_ultra"):
+        if mode in ("print_master", "3t_hd"):
             flat_denoise = float(np.clip(0.76 + 0.16 * strength, 0.78, 0.94))
         elif mode == "ge_aw":
             flat_denoise = float(np.clip(0.56 + 0.16 * strength, 0.62, 0.74))
         elif mode == "sr_15t":
             flat_denoise = float(np.clip(0.54 + 0.16 * strength, 0.60, 0.72))
-        elif mode == "fast_mri":
-            flat_denoise = float(np.clip(0.84 + 0.12 * strength, 0.84, 0.96))
         elif mode == "spine_pro":
-            flat_denoise = float(np.clip(0.84 + 0.12 * strength, 0.84, 0.96))
+            flat_denoise = float(np.clip(0.46 + 0.14 * strength, 0.48, 0.62))
         else:
             flat_denoise = float(np.clip(0.45 + 0.28 * strength, 0.52, 0.74))
 
         edge_protect_factor = 0.94
-        bg_suppress_factor = 0.96 if mode == "print_master" else 0.35 if is_axial else 0.72 if (mode == "fast_mri" or seq_type in ("T2_FSE", "T2_STAR_GRE")) else 0.45 if mode in ("ge_aw", "3t_hd") else 0.18 if mode == "rician_nlm" else 0.35
-        crisp_boost = 0.036 if mode == "rician_nlm" else (0.054 if seq_type in ("T2_STAR_GRE", "T2_FSE", "T1_SE") else 0.048) if mode in ("print_master", "3t_hd", "enh6_ultra", "sr_15t", "spine_pro", "ge_aw", "fast_mri") else 0.020
+        bg_suppress_factor = 0.96 if mode == "print_master" else 0.45 if mode in ("ge_aw", "3t_hd") else 0.18 if mode == "rician_nlm" else 0.35
+        crisp_boost = 0.036 if mode == "rician_nlm" else 0.04 if mode in ("print_master", "3t_hd", "sr_15t") else 0.025 if mode in ("spine_pro", "ge_aw") else 0.015
 
         if mode == "rician_nlm":
             edge_protect_factor = 0.98
@@ -108,17 +106,17 @@ class MRIAIEngine:
             bg_suppress_factor = 0.68
             crisp_boost = 0.050
         elif seq_type == "STIR_FLAIR":
-            edge_protect_factor = 0.99
-            bg_suppress_factor = 0.18 if mode == "rician_nlm" else 0.85
-            flat_denoise = min(flat_denoise, 0.78) if mode == "print_master" else min(flat_denoise, 0.68)
-            crisp_boost = max(crisp_boost, 0.062)
+            edge_protect_factor = 0.98
+            bg_suppress_factor = 0.18 if mode == "rician_nlm" else 0.35
+            flat_denoise = min(flat_denoise, 0.56)
+            crisp_boost = max(crisp_boost, 0.038)
         elif seq_type == "T1_SE":
-            edge_protect_factor = 0.985
-            flat_denoise = min(flat_denoise, 0.78)
-            crisp_boost = max(crisp_boost, 0.048)
+            edge_protect_factor = 0.97
+            flat_denoise = min(flat_denoise, 0.64)
+            crisp_boost = max(crisp_boost, 0.030)
         elif seq_type == "PD_ORTHO":
-            edge_protect_factor = 0.985
-            flat_denoise = min(flat_denoise, 0.85)
+            edge_protect_factor = 0.98
+            flat_denoise = min(flat_denoise, 0.56)
             crisp_boost = max(crisp_boost, 0.045)
 
         num_slices = volume.shape[0]
@@ -148,17 +146,15 @@ class MRIAIEngine:
             norm = np.ascontiguousarray(np.clip((src - vol_low) / vol_span, 0.0, 1.0), dtype=np.float32)
             raw_norm_slices.append(norm)
 
-            if mode in ("sr_15t", "ge_aw", "print_master", "3t_hd", "spine_pro", "fast_mri"):
-                # GE PURE / SCIC Surface Coil Shading Equalization (lifts posterior/inferior coil drop-off without brightening air)
+            if mode in ("sr_15t", "ge_aw", "print_master", "3t_hd"):
+                # Anti-Burnout Surface Coil Shading Equalization (GE PURE / SCIC homomorphic curve)
                 illum = gaussian_filter(norm, sigma=max(14.0, min(norm.shape) / 8.0))
-                fg = norm > 0.08
+                fg = norm > 0.10
                 if np.any(fg):
                     ref_illum = float(np.median(illum[fg]))
-                    coil_gain = np.clip(ref_illum / np.maximum(illum, ref_illum * 0.32), 0.88, 1.80)
-                    gain_weight = 0.65 if mode in ("print_master", "3t_hd", "fast_mri") else 0.62 if mode in ("ge_aw", "spine_pro") else 0.35
-                    fg_soft = np.clip((norm - 0.04) / 0.06, 0.0, 1.0)
-                    eff_gain = 1.0 + fg_soft * gain_weight * (coil_gain - 1.0)
-                    norm_work = np.clip(norm * eff_gain, 0.0, 1.0).astype(np.float32)
+                    coil_gain = np.clip(ref_illum / np.maximum(illum, ref_illum * 0.55), 0.90, 1.08)
+                    gain_weight = 0.24 if mode in ("print_master", "3t_hd") else 0.20 if mode == "ge_aw" else 0.18
+                    norm_work = np.clip(norm * ((1.0 - gain_weight) + gain_weight * coil_gain), 0.0, 1.0).astype(np.float32)
                 else:
                     norm_work = norm
             else:
@@ -168,7 +164,7 @@ class MRIAIEngine:
 
             # Physics-safe Rician-VST + Structure-Tensor Tangent-Guided Restoration
             max_eff = 1.10 if seq_type in ("PD_ORTHO", "STIR_FLAIR") else 1.35
-            eff_strength = min(max_eff, strength * (1.35 if (global_sigma >= 0.024 and strength > 0.6) else 1.0))
+            eff_strength = min(max_eff, strength * (1.25 if (global_sigma >= 0.032 and strength > 0.6) else 1.0))
             phys_clean, _ = structure_tensor_tangent_restore(
                 norm_work, strength=eff_strength, sigma_est=global_sigma
             )
@@ -218,8 +214,7 @@ class MRIAIEngine:
                 vol_smooth = curr_clean
 
             # Anisotropic fusion: in flat regions use 100% Rician-debias + NLM clean; on true edges blend coherently
-            edge_prot = 0.72 if seq_type in ("T2_FSE", "T2_STAR_GRE") else 0.55
-            local_alpha = flat_denoise * (1.0 - edge_prot * edge_protect_factor * edge_mask)
+            local_alpha = flat_denoise * (1.0 - 0.55 * edge_protect_factor * edge_mask)
             enhanced = (1.0 - local_alpha) * curr_clean + local_alpha * vol_smooth
 
             # Coherent Edge Deblurring (computed on the denoised signal curr_clean, NEVER on raw noisy norm_work!)
@@ -232,22 +227,17 @@ class MRIAIEngine:
                 crisp_mult = 1.2 if strength <= 0.6 else 1.6 if strength <= 0.85 else 2.0
                 enhanced = np.clip(enhanced + (crisp_boost * crisp_mult) * clean_detail * crisp_gate, 0.0, 1.0)
 
-            # T2 Fluid Purity & Whiteness Boost (+24% CSF-only lift above 0.48 so spinal cord stays dark & crisp against bright CSF)
+            # T2 Fluid Purity & Whiteness Boost (+9% gentle fluid lift for crisp CSF/joint fluid in diagnosis & print)
             if seq_type in ("T2_FSE", "T2_STAR_GRE"):
-                fluid_mask = np.clip((enhanced - 0.46) / 0.26, 0.0, 1.0) ** 1.1
-                enhanced = np.clip(enhanced * (1.0 + 0.26 * fluid_mask), 0.0, 1.0)
+                fluid_mask = np.clip((enhanced - 0.58) / 0.25, 0.0, 1.0) ** 1.3
+                enhanced = np.clip(enhanced * (1.0 + 0.09 * fluid_mask), 0.0, 1.0)
 
-            # Calibrated Natural Grain + Structure-Selective Bone/Cartilage Texture (soft tissue stays smooth)
-            fast_scan_scale = 0.52 if global_sigma >= 0.024 else 1.0
-            u_desc = (description or "").upper()
-            is_axial = any(k in u_desc for k in ("AX", "OAX", "TRANS"))
-            is_sagittal = any(k in u_desc for k in ("SAG", "OSAG"))
-            if mode == "fast_mri":
-                grain_ratio = 0.00
-            elif mode == "print_master":
-                grain_ratio = 0.24 if seq_type == "STIR_FLAIR" else 0.12 if seq_type == "T1_SE" else 0.22 if seq_type == "PD_ORTHO" else 0.04
+            # Calibrated Natural Grain + Adaptive Fast-Scan Noise Suppression (film print stays silky clean)
+            fast_scan_scale = 0.65 if global_sigma >= 0.032 else 1.0
+            if mode == "print_master":
+                grain_ratio = 0.03
             elif mode == "3t_hd":
-                grain_ratio = 0.34 if seq_type == "STIR_FLAIR" else 0.32 if seq_type == "T1_SE" else 0.08 if seq_type == "PD_ORTHO" else (0.20 if is_axial else 0.28) if seq_type in ("T2_STAR_GRE", "T2_FSE") else 0.25
+                grain_ratio = 0.08
             elif strength <= 0.6:  # MILD / L1
                 if seq_type in ("T2_FSE", "T2_STAR_GRE"):
                     grain_ratio = 0.28
@@ -255,34 +245,23 @@ class MRIAIEngine:
                     grain_ratio = 0.27
                 elif seq_type == "T1_SE":
                     grain_ratio = 0.26
-                elif seq_type == "PD_ORTHO":
-                    grain_ratio = 0.28
                 else:
                     grain_ratio = 0.22
             elif strength <= 0.85:  # MEDIUM / L2
-                base_g = 0.28 if seq_type in ("PD_ORTHO", "STIR_FLAIR") else 0.22 if mode == "rician_nlm" else 0.18 if seq_type in ("T2_FSE", "T2_STAR_GRE", "T1_SE") else 0.14
+                base_g = 0.22 if mode == "rician_nlm" else 0.16 if seq_type in ("T2_FSE", "T2_STAR_GRE", "STIR_FLAIR", "T1_SE") else 0.13
                 grain_ratio = base_g * fast_scan_scale
-            else:  # STRONG / L3 (PD cartilage: 36%; T1/STIR: 26%; T2/GRE: 20%; ANGIO_MRV MIP: 6%)
-                fast_l3_scale = 0.85 if global_sigma >= 0.035 else 1.0
-                base_g = 0.06 if seq_type == "ANGIO_MRV" else 0.34 if seq_type == "STIR_FLAIR" else 0.32 if seq_type == "T1_SE" else 0.08 if seq_type == "PD_ORTHO" else 0.26 if mode == "rician_nlm" else (0.20 if is_axial else 0.28) if seq_type in ("T2_STAR_GRE", "T2_FSE") else 0.25
+            else:  # STRONG / L3 (Brain rician_nlm/PD/STIR: 26%; T1: 24%; T2: clean 15%; ANGIO_MRV MIP: 6%)
+                fast_l3_scale = 0.80 if global_sigma >= 0.032 else 1.0
+                base_g = 0.06 if seq_type == "ANGIO_MRV" else 0.26 if (mode == "rician_nlm" or seq_type in ("PD_ORTHO", "STIR_FLAIR")) else 0.15 if seq_type in ("T2_FSE", "T2_STAR_GRE") else 0.24 if seq_type == "T1_SE" else 0.20
                 grain_ratio = base_g * fast_l3_scale
             texture_residual = norm_work - enhanced
             tissue_mask = np.clip(norm_work / 0.08, 0.0, 1.0)
-            if seq_type == "PD_ORTHO":
-                # Dual-tissue adaptive grain (#152: تنعم البروتون وتخشن العظم)
-                # Bone marrow gets authentic 32% trabecular grain; meniscus/cartilage/ligaments get 6% velvet smooth
-                bone_marrow_mask = np.clip((norm_work - 0.20) / 0.12, 0.0, 1.0) * np.clip((0.74 - norm_work) / 0.12, 0.0, 1.0)
-                effective_grain = (1.0 - bone_marrow_mask) * 0.06 + bone_marrow_mask * 0.32
-                pd_gate = np.clip(edge_mask ** 0.85, 0.08, 1.0) * (1.0 - bone_marrow_mask) + bone_marrow_mask * np.clip(0.55 + 0.45 * edge_mask, 0.55, 1.0)
-                enhanced = np.clip(enhanced + (effective_grain * tissue_mask * pd_gate) * texture_residual, 0.0, 1.0)
-            else:
-                texture_gate = np.clip(0.55 + 0.45 * edge_mask, 0.55, 1.0) if seq_type in ("T2_STAR_GRE", "T2_FSE", "T1_SE") else np.clip(edge_mask ** 0.70, 0.12, 1.0) if seq_type == "STIR_FLAIR" else np.clip(0.35 + 0.65 * edge_mask, 0.35, 1.0)
-                enhanced = np.clip(enhanced + (grain_ratio * tissue_mask * texture_gate) * texture_residual, 0.0, 1.0)
+            enhanced = np.clip(enhanced + (grain_ratio * tissue_mask) * texture_residual, 0.0, 1.0)
 
             # Display-only Film S-Curve is applied ONLY in print_master mode (never in diagnostic modes!)
             if mode == "print_master":
-                k = 4.2 if seq_type in ("STIR_FLAIR", "T1_SE") else 3.5
-                x0 = 0.28 if seq_type == "STIR_FLAIR" else 0.36 if seq_type == "T1_SE" else 0.38
+                k = 3.5
+                x0 = 0.38
                 scurve = 1.0 / (1.0 + np.exp(-k * (enhanced - x0)))
                 s_min = 1.0 / (1.0 + np.exp(-k * (0.0 - x0)))
                 s_max = 1.0 / (1.0 + np.exp(-k * (1.0 - x0)))
@@ -293,17 +272,6 @@ class MRIAIEngine:
             if seq_type == "ANGIO_MRV":
                 vessel_mask = np.clip((enhanced - 0.18) / 0.25, 0.0, 1.0)
                 enhanced = np.clip(enhanced * (1.0 - 0.12 * (1.0 - vessel_mask)) + 0.06 * vessel_mask * (enhanced ** 0.85), 0.0, 1.0)
-
-            # Clinical axial & T1 adjustments requested by technician (#120 & #124)
-            if is_axial:
-                # Reduce noise & brighten spinal canal / foramina in axial views
-                enhanced = np.clip(np.power(enhanced, 0.82) * 1.08, 0.0, 1.0)
-            if seq_type == "T1_SE" and mode != "print_master":
-                # Boost T1 contrast: rich bright marrow/fat and deep dark CSF/discs
-                enhanced = np.clip(np.power(enhanced, 1.10) * 1.08, 0.0, 1.0)
-            if seq_type == "PD_ORTHO" and mode != "print_master":
-                # Boost PD contrast & smooth cartilage/meniscus tissue (#127)
-                enhanced = np.clip(np.power(enhanced, 1.08) * 1.06, 0.0, 1.0)
 
             # Technician-calibrated Brightness & Contrast adjustment (default 1.0 / 1.0 = no-op)
             try:
@@ -316,7 +284,7 @@ class MRIAIEngine:
                 enhanced = np.clip((enhanced - 0.5) * _ct + 0.5 + (_br - 1.0) * 0.5, 0.0, 1.0)
 
             # Rician Background Air Gate
-            bg_threshold = 0.035 if is_axial else (0.14 if seq_type == "ANGIO_MRV" else 0.055 if seq_type == "STIR_FLAIR" else 0.085 if mode == "print_master" else 0.070)
+            bg_threshold = 0.14 if seq_type == "ANGIO_MRV" else 0.09 if mode == "print_master" else 0.075
             bg_mask = np.clip((bg_threshold - norm_work) / bg_threshold, 0.0, 1.0)
             enhanced = enhanced * (1.0 - bg_suppress_factor * bg_mask)
 
@@ -335,7 +303,7 @@ class MRIAIEngine:
                 restored = restored + 0.48 * np.clip(detail_hi, -limit_hi, limit_hi)
             if np.issubdtype(slice_2d.dtype, np.integer):
                 info = np.iinfo(slice_2d.dtype)
-                results.append(np.rint(np.clip(restored, info.min, info.max)).astype(slice_2d.dtype))
+                results.append(np.rint(np.clip(restored, max(info.min, int(vol_f[i].min())), info.max)).astype(slice_2d.dtype))
             else:
                 results.append(restored.astype(slice_2d.dtype))
 
